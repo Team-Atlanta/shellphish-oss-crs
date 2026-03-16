@@ -1,0 +1,31 @@
+name: crs-aflpp
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  - name: aflpp-build
+    dockerfile: oss-crs/dockerfiles/builder.Dockerfile
+    outputs:
+      - build
+    additional_env:
+      FUZZING_ENGINE: shellphish_aflpp
+
+crs_run_phase:
+  fuzzer:
+    dockerfile: oss-crs/dockerfiles/runner.Dockerfile
+
+supported_target:
+  mode:
+    - full
+  language:
+    - c
+    - c++
+  sanitizer:
+    - address
+  architecture:
+    - x86_64

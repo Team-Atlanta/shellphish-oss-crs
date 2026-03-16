@@ -1,0 +1,17 @@
+##############################################################################
+#                        CRS Compose Configuration                           #
+#                   Local development for crs-aflpp                          #
+##############################################################################
+
+run_env: local
+docker_registry: local
+
+oss_crs_infra:
+  cpuset: "0-3"
+  memory: "16G"
+
+crs-aflpp:
+  source:
+    local_path: /project/crs-aflpp
+  cpuset: "4-7"
+  memory: "16G"

@@ -1,0 +1,51 @@
+#!/bin/bash
+# compile_target: Compile the OSS-Fuzz target with AFL++ instrumentation,
+# then submit the build output via libCRS.
+#
+# This is the glue between Shellphish's AFL++ toolchain and OSS-CRS's build phase.
+# It replicates the environment setup from Shellphish's compile_shellphish_aflpp
+# without modifying that script — just the same CC/CXX/env-var contract.
+
+set -euo pipefail
+
+AFLPP_DIR="$SRC/shellphish/aflplusplus"
+
+# --- AFL++ fuzzing engine setup (mirrors compile_shellphish_aflpp) ---
+
+# Replace the fuzzing engine library with AFL++'s driver
+cp -f "$AFLPP_DIR/libAFLDriver.a" "$LIB_FUZZING_ENGINE"
+
+# Copy all AFL++ tools to $OUT so the runner can use them (afl-fuzz, etc.)
+pushd "$AFLPP_DIR" > /dev/null
+ls afl-* *.txt *.a *.o *.so 2>/dev/null | sort -u | xargs -r cp -t "$OUT"
+popd > /dev/null
+
+# Compiler: use AFL++'s instrumented clang wrappers
+export CC="$AFLPP_DIR/afl-clang-fast"
+export CXX="$AFLPP_DIR/afl-clang-fast++"
+
+# AFL++ instrumentation settings (from Shellphish defaults)
+export AFL_QUIET=1
+export AFL_LLVM_USE_TRACE_PC=1
+export AFL_LLVM_DICT2FILE="$OUT/afl++.dict"
+export AFL_LLVM_DICT2FILE_NO_MAIN=1
+export AFL_MAP_SIZE=2621440
+export AFL_IGNORE_PROBLEMS=1
+export AFL_IGNORE_UNKNOWN_ENVS=1
+
+# Sanitizer: don't abort during compilation, disable leak detection
+export ASAN_OPTIONS="detect_leaks=0:symbolize=0:detect_odr_violation=0:abort_on_error=1"
+
+# Debug flags for useful crash backtraces
+export CFLAGS="-g"
+export CXXFLAGS="-g"
+
+# Record AFL++ options for debugging
+echo "AFL++ compile options:"
+env | grep -E '^AFL_' | tee "$OUT/shellphish_aflpp_options.txt"
+
+# --- Compile the target ---
+compile
+
+# --- Submit build output to OSS-CRS ---
+libCRS submit-build-output "$OUT" build
