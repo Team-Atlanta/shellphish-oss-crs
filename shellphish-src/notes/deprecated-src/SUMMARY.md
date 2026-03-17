@@ -1,0 +1,63 @@
+# Summary
+
+[Introduction](./README.md)
+
+# System Architecture
+
+- [Architecture Overview](./arch.md)
+
+# Core Components
+
+- [Bug Finding](./bug-finding.md)
+  - [Static Analysis](./bug-finding/static-analysis.md)
+    - [CodeQL](./bug-finding/static-analysis/codeql.md)
+    - [Semgrep](./bug-finding/static-analysis/semgrep.md)
+    - [CodeChecker](./bug-finding/static-analysis/codechecker.md)
+    - [Clang Indexer](./bug-finding/static-analysis/clang-indexer.md)
+    - [Function Index Generator](./bug-finding/static-analysis/function-index-generator.md)
+    - [Scanguy](./bug-finding/static-analysis/scanguy.md)
+  - [Fuzzing Engines](./bug-finding/fuzzing.md)
+    - [AFL++](./bug-finding/fuzzing/aflplusplus.md)
+    - [AFLRun](./bug-finding/fuzzing/aflrun.md)
+    - [libFuzzer](./bug-finding/fuzzing/libfuzzer.md)
+    - [Jazzer](./bug-finding/fuzzing/jazzer.md)
+    - [Snapchange](./bug-finding/fuzzing/snapchange.md)
+    - [ClusterFuzz](./bug-finding/fuzzing/clusterfuzz.md)
+    - [DiscoveryGuy](./bug-finding/fuzzing/discoveryguy.md)
+  - [Grammar & Input Generation](./bug-finding/grammar.md)
+    - [Grammar-Guy](./bug-finding/grammar/grammar-guy.md)
+    - [Grammar-Composer](./bug-finding/grammar/grammar-composer.md)
+    - [Grammaroomba](./bug-finding/grammar/grammaroomba.md)
+    - [ANTLR4-Guy](./bug-finding/grammar/antlr4-guy.md)
+    - [Corpus-Guy](./bug-finding/grammar/corpus-guy.md)
+    - [Quickseed](./bug-finding/grammar/quickseed.md)
+    - [Syzgrammar-Gen](./bug-finding/grammar/syzgrammar-gen.md)
+  - [Coverage & Monitoring](./bug-finding/coverage.md)
+    - [Coverage-Guy](./bug-finding/coverage/coverage-guy.md)
+    - [Peek-a-Boo](./bug-finding/coverage/peek-a-boo.md)
+  - [Crash Analysis](./bug-finding/crash-analysis.md)
+    - [Crash-Tracer](./bug-finding/crash-analysis/crash-tracer.md)
+    - [Crash Exploration](./bug-finding/crash-analysis/crash-exploration.md)
+    - [Invariant-Guy](./bug-finding/crash-analysis/invariant-guy.md)
+    - [Kumu-Shi-Runner](./bug-finding/crash-analysis/kumu-shi-runner.md)
+  - [Vulnerability Detection](./bug-finding/vuln-detection.md)
+    - [Vuln Detect Model](./bug-finding/vuln-detection/vuln-detect-model.md)
+    - [DyVA](./bug-finding/vuln-detection/dyva.md)
+    - [AIJON](./bug-finding/vuln-detection/aijon.md)
+  - [POV Generation](./bug-finding/pov-generation.md)
+    - [POIGuy](./bug-finding/pov-generation/poiguy.md)
+    - [POVGuy](./bug-finding/pov-generation/povguy.md)
+    - [POV-Patrol](./bug-finding/pov-generation/pov-patrol.md)
+- [Patch Generation](./patch-generation.md)
+  - [PatcherG](./patch-generation/patcherg.md)
+  - [PatcherQ](./patch-generation/patcherq.md)
+  - [PatcherY](./patch-generation/patchery.md)
+  - [PatcherX](./patch-generation/patcherx.md)
+  - [Patch Validation](./patch-generation/patch-validation.md)
+- [SARIF Processing](./sarif-processing.md)
+
+# Infrastructure
+
+- [Infrastructure Overview](./infrastructure.md)
+  - [PyDataTask](./infrastructure/pydatatask.md)
+  - [Analysis Graph](./infrastructure/analysis-graph.md)
