@@ -13,6 +13,6 @@ RUN chmod +x /usr/local/bin/run_fuzzer
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
-COPY bin/run_crs.sh /usr/local/bin/run_crs.sh
-RUN chmod +x /usr/local/bin/run_crs.sh
-ENTRYPOINT ["/usr/local/bin/run_crs.sh"]
+COPY bin/run_aflpp.sh /usr/local/bin/run_aflpp.sh
+RUN chmod +x /usr/local/bin/run_aflpp.sh
+ENTRYPOINT ["/usr/local/bin/run_aflpp.sh"]
