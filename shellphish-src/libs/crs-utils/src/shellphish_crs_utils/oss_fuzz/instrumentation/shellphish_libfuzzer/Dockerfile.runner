@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=
+ARG BASE_IMAGE=ghcr.io/aixcc-finals/base-runner:v1.3.0
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y software-properties-common
@@ -9,13 +9,11 @@ RUN mkdir -p /shellphish
 
 RUN echo "kw1=\"FUZZ\"" > /shellphish/dict.txt
 
-COPY minimize_corpus_and_same_node_sync.sh /shellphish/minimize_corpus_and_same_node_sync.sh
-# RUN ls -al /out
-# COPY instrumentation_and_strings.py /shellphish/instrumentation_and_strings.py
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/minimize_corpus_and_same_node_sync.sh /shellphish/minimize_corpus_and_same_node_sync.sh
 
-# TODO: move this to prebuild and use wheels to install
-# TODO: maybe just get dicts from Nicola
-# COPY libcodeql /shellphish/libs/libcodeql
-# RUN pip3 install -e /shellphish/libs/libcodeql
-# COPY crs-utils /shellphish/libs/crs-utils
-# RUN pip3 install -e /shellphish/libs/crs-utils
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_libfuzzer.sh /usr/local/bin/run_libfuzzer.sh
+RUN chmod +x /usr/local/bin/run_libfuzzer.sh
+ENTRYPOINT ["/usr/local/bin/run_libfuzzer.sh"]

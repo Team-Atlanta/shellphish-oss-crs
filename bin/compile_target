@@ -1,8 +1,32 @@
 #!/bin/bash
-# OSS-CRS glue: calls OSS-Fuzz's compile (which sources compile_shellphish_aflpp
-# to set up Shellphish's AFL++ v4.30c), then submits build output via libCRS.
+# OSS-CRS glue: calls OSS-Fuzz's compile, then submits build output via libCRS.
+# BUILD_OUTPUT_NAME is set by additional_env in crs.yaml to match the outputs field.
 set -euo pipefail
 
 compile
 
-libCRS submit-build-output "$OUT" build
+# For LibFuzzer: replace harness binaries with wrapper.py symlinks.
+# Shellphish's symlink_patch does this via TARGET_SPLIT_METADATA (unavailable in OSS-CRS).
+# We do the same thing using the compiled harness binaries in $OUT.
+if [ -f /shellphish/wrapper.py ] && [ "${FUZZING_ENGINE:-}" != "shellphish_aflpp" ]; then
+    echo "OSS-CRS: installing wrapper.py symlinks for LibFuzzer harnesses"
+    cp /shellphish/wrapper.py "$OUT/wrapper.py"
+    chmod +x "$OUT/wrapper.py"
+    for harness in "$OUT"/*; do
+        [ -f "$harness" ] || continue
+        [ -x "$harness" ] || continue
+        name=$(basename "$harness")
+        # Skip known non-harness files
+        [[ "$name" == *.* ]] && continue
+        [ "$name" = "wrapper" ] && continue
+        [ "$name" = "llvm-symbolizer" ] && continue
+        # Skip if already wrapped
+        [ -L "$harness" ] && continue
+        [ -f "$harness.instrumented" ] && continue
+        mv "$harness" "$harness.instrumented"
+        ln -s "$OUT/wrapper.py" "$harness"
+        echo "OSS-CRS: wrapped $name -> wrapper.py"
+    done
+fi
+
+libCRS submit-build-output "$OUT" "${BUILD_OUTPUT_NAME:-build}"

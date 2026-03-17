@@ -1,4 +1,4 @@
-name: crs-aflpp
+name: crs-shellphish
 type:
   - bug-finding
 version: 1.0.0
@@ -14,10 +14,19 @@ target_build_phase:
       - build
     additional_env:
       FUZZING_ENGINE: shellphish_aflpp
+      BUILD_OUTPUT_NAME: build
+  - name: libfuzzer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-libfuzzer
+    additional_env:
+      BUILD_OUTPUT_NAME: build-libfuzzer
 
 crs_run_phase:
-  fuzzer:
+  aflpp_fuzzer:
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
+  libfuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.runner
 
 supported_target:
   mode:
