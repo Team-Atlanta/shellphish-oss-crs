@@ -12,6 +12,6 @@ oss_crs_infra:
 
 crs-aflpp:
   source:
-    local_path: /project/crs-aflpp
+    local_path: /project/shellphish-oss-crs
   cpuset: "4-7"
   memory: "16G"

@@ -1,5 +1,7 @@
-ARG BASE_IMAGE=
-ARG PREBUILD_IMAGE=
+# OSS-CRS passes target_base_image; map to BASE_IMAGE for compatibility
+ARG target_base_image
+ARG BASE_IMAGE=${target_base_image}
+ARG PREBUILD_IMAGE=crs-aflpp-prebuild:latest
 
 # pull the prebuild image in with a given name
 FROM ${PREBUILD_IMAGE} AS prebuild
@@ -16,7 +18,7 @@ RUN apt-get update && \
     patchelf
 
 RUN mv /usr/bin/ld /usr/bin/ld.real
-COPY anti-wrap-ld.sh /usr/bin/ld
+COPY shellphish-src/libs/c-instrumentation/anti-wrap-ld.sh /usr/bin/ld
 RUN chmod +x /usr/bin/ld
 
 RUN mkdir -p $SRC/shellphish
@@ -30,4 +32,11 @@ COPY --from=prebuild $SRC/nautilus/target/release/librevolver_mutator.so $SRC/sh
 COPY --from=prebuild $SRC/nautilus/target/release/watchtower $SRC/shellphish/nautilus
 COPY --from=prebuild $SRC/nautilus/target/release/generator $SRC/shellphish/nautilus
 
-COPY compile_shellphish_aflpp /usr/local/bin/
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/compile_shellphish_aflpp /usr/local/bin/
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/compile_target /usr/local/bin/compile_target
+RUN chmod +x /usr/local/bin/compile_target
+CMD ["compile_target"]

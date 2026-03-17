@@ -9,7 +9,7 @@ prepare_phase:
 
 target_build_phase:
   - name: aflpp-build
-    dockerfile: oss-crs/dockerfiles/builder.Dockerfile
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
     outputs:
       - build
     additional_env:
@@ -17,11 +17,12 @@ target_build_phase:
 
 crs_run_phase:
   fuzzer:
-    dockerfile: oss-crs/dockerfiles/runner.Dockerfile
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
 
 supported_target:
   mode:
     - full
+    - delta
   language:
     - c
     - c++

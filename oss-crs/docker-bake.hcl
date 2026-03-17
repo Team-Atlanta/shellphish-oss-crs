@@ -1,9 +1,9 @@
 group "default" {
-  targets = ["crs-aflpp-base"]
+  targets = ["crs-aflpp-prebuild"]
 }
 
-target "crs-aflpp-base" {
+target "crs-aflpp-prebuild" {
   context    = "."
-  dockerfile = "oss-crs/dockerfiles/base.Dockerfile"
-  tags       = ["crs-aflpp-base:latest"]
+  dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.prebuild"
+  tags       = ["crs-aflpp-prebuild:latest"]
 }

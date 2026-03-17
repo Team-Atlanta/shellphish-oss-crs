@@ -1,8 +1,18 @@
-ARG BASE_IMAGE=
+ARG BASE_IMAGE=ghcr.io/aixcc-finals/base-runner:v1.3.0
 FROM ${BASE_IMAGE} AS aflpp-afl-compile-base
 
 RUN apt-get update && apt-get install -y jq rsync
 
-COPY yq /usr/local/bin/
-COPY yq /usr/bin/
-COPY run_fuzzer /usr/local/bin/
+# yq: not pre-installed in base-runner:v1.3.0; original pipeline COPY'd a pre-existing binary
+RUN curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64 -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq && cp /usr/local/bin/yq /usr/bin/yq
+
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/run_fuzzer /usr/local/bin/
+RUN chmod +x /usr/local/bin/run_fuzzer
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_crs.sh /usr/local/bin/run_crs.sh
+RUN chmod +x /usr/local/bin/run_crs.sh
+ENTRYPOINT ["/usr/local/bin/run_crs.sh"]
