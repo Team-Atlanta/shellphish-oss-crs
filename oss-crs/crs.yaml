@@ -8,6 +8,15 @@ prepare_phase:
   hcl: oss-crs/docker-bake.hcl
 
 target_build_phase:
+  # --- Canonical build (standard compilation + metadata, must succeed) ---
+  - name: canonical-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-canonical
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      BUILD_OUTPUT_NAME: build-canonical
+
   # --- Fuzzer builds ---
   - name: aflpp-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
@@ -16,18 +25,12 @@ target_build_phase:
     additional_env:
       FUZZING_ENGINE: shellphish_aflpp
       BUILD_OUTPUT_NAME: build-aflpp
-  # Canonical build: same toolchain as libfuzzer, compiles once.
-  - name: canonical-build
-    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
-    outputs:
-      - build-canonical
-    additional_env:
-      BUILD_OUTPUT_NAME: build-canonical
   - name: libfuzzer-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
     outputs:
       - build-libfuzzer
     additional_env:
+      FUZZING_ENGINE: libfuzzer
       BUILD_OUTPUT_NAME: build-libfuzzer
 
   # --- Analysis chain ---
