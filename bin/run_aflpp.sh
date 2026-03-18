@@ -19,7 +19,7 @@ echo "Got allocation: AFLPP_CPUS=${AFLPP_CPUS:-unset}"
 HARNESS="${OSS_CRS_TARGET_HARNESS}"
 
 # --- Download build output ---
-libCRS download-build-output build /out
+libCRS download-build-output build-aflpp /out
 export OUT=/out
 export PATH="$OUT:$PATH"
 export LD_LIBRARY_PATH="${OUT}:${LD_LIBRARY_PATH:-}"

@@ -1,61 +1,98 @@
 #!/bin/bash
 # OSS-CRS glue: runs Shellphish's Code-Swipe to rank functions by vulnerability likelihood.
 # Reads: func-index + clang-index + semgrep-report (from previous build steps)
+#        /oss-fuzz-project (from target image via multi-stage in Dockerfile)
 # Writes: code-swipe-ranking
 set -euo pipefail
 
-# Download function index from previous build step
+# Download build outputs from previous steps
 FUNC_INDEX_DIR="/tmp/func-index-input"
 libCRS download-build-output func-index "$FUNC_INDEX_DIR"
 
-# Download function JSONs from clang-indexer
 CLANG_INDEX_DIR="/tmp/clang-index-input"
 libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
 
-# Download semgrep report (optional — code-swipe works without it)
 SEMGREP_DIR="/tmp/semgrep-input"
 libCRS download-build-output semgrep-report "$SEMGREP_DIR" 2>/dev/null || true
 
-# Source code from clang-index output
-REPO_PATH="$CLANG_INDEX_DIR/src"
-if [ ! -d "$REPO_PATH" ]; then
-    REPO_PATH="$CLANG_INDEX_DIR/original_workdir"
-fi
-if [ ! -d "$REPO_PATH" ]; then
-    REPO_PATH="/src"
-fi
+# Download canonical build output — the complete project directory produced by
+# the canonical-build step. Contains project files (Dockerfile, project.yaml),
+# compiled harnesses (artifacts/out/), build metadata, and preserved source.
+PROJECT_DIR="/tmp/canonical-project"
+libCRS download-build-output build-canonical "$PROJECT_DIR"
 
-# Build project metadata YAML from OSS-CRS env vars
-METADATA_PATH="/tmp/project_metadata.yaml"
-LANG="${FUZZING_LANGUAGE:-c}"
-cat > "$METADATA_PATH" <<EOF
-language: $LANG
-EOF
+# The canonical build already produced shellphish_build_metadata.yaml (with
+# harnesses) and the project files. Code-swipe needs:
+#   1. project.yaml cleaned for OSSFuzzProjectYAML schema
+#   2. augmented_metadata.yaml combining project.yaml + build metadata
+# Both use Shellphish's pydantic models for proper validation.
+python3 <<PYEOF
+import yaml, os
+
+from shellphish_crs_utils.models.oss_fuzz import (
+    OSSFuzzProjectYAML,
+    ShellphishMetadata,
+    AugmentedProjectMetadata,
+)
+
+project_dir = "$PROJECT_DIR"
+target = os.environ.get("OSS_CRS_TARGET", os.environ.get("PROJECT_NAME", "unknown"))
+
+# --- project.yaml: validate with the real model ---
+with open(f"{project_dir}/project.yaml") as f:
+    raw = yaml.safe_load(f)
+
+model_fields = set(OSSFuzzProjectYAML.model_fields.keys())
+cleaned = {k: v for k, v in raw.items() if k in model_fields}
+cleaned["shellphish_project_name"] = target
+
+validated = OSSFuzzProjectYAML.model_validate(cleaned)
+with open(f"{project_dir}/project.yaml", "w") as f:
+    yaml.safe_dump(validated.model_dump(mode="json", exclude_none=True), f)
+
+# --- read build metadata from canonical build ---
+with open(f"{project_dir}/artifacts/out/shellphish_build_metadata.yaml") as f:
+    build_meta_raw = yaml.safe_load(f)
+build_meta = ShellphishMetadata.model_validate(build_meta_raw)
+print(f"Canonical build: {len(build_meta.harnesses)} harnesses, source_repo_path={build_meta.source_repo_path}")
+
+# --- augmented metadata: combining project.yaml + build metadata ---
+augmented = AugmentedProjectMetadata(
+    **validated.model_dump(exclude_none=True),
+    shellphish=build_meta,
+)
+with open(f"{project_dir}/augmented_metadata.yaml", "w") as f:
+    yaml.safe_dump(augmented.model_dump(mode="json", exclude_none=True), f)
+PYEOF
 
 OUTPUT_DIR="/tmp/code-swipe-output"
 mkdir -p "$OUTPUT_DIR"
 
 echo "=== Running Code-Swipe ==="
 
-# Build arguments
 ARGS=(
-    --project-metadata-path "$METADATA_PATH"
+    --project-metadata-path "$PROJECT_DIR/augmented_metadata.yaml"
     --project-id "${OSS_CRS_TARGET:-unknown}"
-    --project-dir "$REPO_PATH"
-    --index-dir "$FUNC_INDEX_DIR"
+    --project-dir "$PROJECT_DIR"
+    --index-dir "$FUNC_INDEX_DIR/indices.json"
     --index-dir-json "$CLANG_INDEX_DIR/full"
     --output-path "$OUTPUT_DIR/ranking.yaml"
 )
 
-# Add semgrep report if available
 if [ -f "$SEMGREP_DIR/vulnerable_functions.json" ]; then
     ARGS+=(--semgrep-report-path "$SEMGREP_DIR/vulnerable_functions.json")
 fi
 
+# [OSS-CRS glue] Force local function resolver — no remote service in OSS-CRS.
 cd /shellphish/components/code-swipe
-python -m src.main "${ARGS[@]}" || true
+sed -i 's/USE_REMOTE_FUNCTION_RESOLVER = True/USE_REMOTE_FUNCTION_RESOLVER = False/' \
+    src/input/ingester.py src/input/code_registry.py
+
+python -m src.main "${ARGS[@]}" 2>&1 | tee "$OUTPUT_DIR/code-swipe.log" || true
 
 echo "=== Code-Swipe complete ==="
-ls -la "$OUTPUT_DIR"
+if [ -f "$OUTPUT_DIR/ranking.yaml" ]; then
+    head -30 "$OUTPUT_DIR/ranking.yaml"
+fi
 
 libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-code-swipe-ranking}"

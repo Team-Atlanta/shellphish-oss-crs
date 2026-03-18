@@ -8,14 +8,21 @@ prepare_phase:
   hcl: oss-crs/docker-bake.hcl
 
 target_build_phase:
-  # --- Fuzzer builds (compile target with instrumentation) ---
+  # --- Fuzzer builds ---
   - name: aflpp-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
     outputs:
-      - build
+      - build-aflpp
     additional_env:
       FUZZING_ENGINE: shellphish_aflpp
-      BUILD_OUTPUT_NAME: build
+      BUILD_OUTPUT_NAME: build-aflpp
+  # Canonical build: same toolchain as libfuzzer, compiles once.
+  - name: canonical-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-canonical
+    additional_env:
+      BUILD_OUTPUT_NAME: build-canonical
   - name: libfuzzer-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
     outputs:
@@ -23,7 +30,7 @@ target_build_phase:
     additional_env:
       BUILD_OUTPUT_NAME: build-libfuzzer
 
-  # --- Analysis chain (static analysis + indexing) ---
+  # --- Analysis chain ---
   - name: clang-indexer-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.builder
     outputs:
@@ -38,7 +45,7 @@ target_build_phase:
       FUZZING_LANGUAGE: c
       BUILD_OUTPUT_NAME: codeql-db
 
-  # --- Post-processing chain (depends on clang-index output) ---
+  # --- Post-processing chain ---
   - name: func-index-gen
     dockerfile: shellphish-src/components/function-index-generator/Dockerfile
     outputs:

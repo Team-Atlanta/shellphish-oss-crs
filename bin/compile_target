@@ -5,9 +5,32 @@ set -euo pipefail
 
 compile
 
+# For canonical build: package project directory + metadata, then exit.
+# Must be before wrapper.py replacement so artifacts/out/ has real binaries.
+# Equivalent to Shellphish's canonical_build rsync (preprocessing.yaml:593)
+# + build_target__local() metadata (project.py:1158-1169).
+if [ "${BUILD_OUTPUT_NAME:-}" = "build-canonical" ]; then
+    CANONICAL_OUT="/tmp/canonical-build"
+    mkdir -p "$CANONICAL_OUT/artifacts/out" "$CANONICAL_OUT/artifacts/docker"
+    cp -r "$OUT"/. "$CANONICAL_OUT/artifacts/out/"
+    if [ -d "${OSS_CRS_PROJ_PATH:-}" ]; then
+        cp "$OSS_CRS_PROJ_PATH/Dockerfile" "$CANONICAL_OUT/" 2>/dev/null || true
+        cp "$OSS_CRS_PROJ_PATH/project.yaml" "$CANONICAL_OUT/" 2>/dev/null || true
+        cp "$OSS_CRS_PROJ_PATH/build.sh" "$CANONICAL_OUT/" 2>/dev/null || true
+    fi
+    cat > "$CANONICAL_OUT/artifacts/out/shellphish_build_metadata.yaml" <<METAEOF
+fuzzing_engine: ${FUZZING_ENGINE:-libfuzzer}
+project_name: ${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}
+sanitizer: ${SANITIZER:-address}
+source_repo_path: "$PWD"
+architecture: ${ARCHITECTURE:-x86_64}
+METAEOF
+    libCRS submit-build-output "$CANONICAL_OUT" "build-canonical"
+    exit 0
+fi
+
 # For LibFuzzer: replace harness binaries with wrapper.py symlinks.
 # Shellphish's symlink_patch does this via TARGET_SPLIT_METADATA (unavailable in OSS-CRS).
-# We do the same thing using the compiled harness binaries in $OUT.
 if [ -f /shellphish/wrapper.py ] && [ "${FUZZING_ENGINE:-}" != "shellphish_aflpp" ]; then
     echo "OSS-CRS: installing wrapper.py symlinks for LibFuzzer harnesses"
     cp /shellphish/wrapper.py "$OUT/wrapper.py"
@@ -16,11 +39,9 @@ if [ -f /shellphish/wrapper.py ] && [ "${FUZZING_ENGINE:-}" != "shellphish_aflpp
         [ -f "$harness" ] || continue
         [ -x "$harness" ] || continue
         name=$(basename "$harness")
-        # Skip known non-harness files
         [[ "$name" == *.* ]] && continue
         [ "$name" = "wrapper" ] && continue
         [ "$name" = "llvm-symbolizer" ] && continue
-        # Skip if already wrapped
         [ -L "$harness" ] && continue
         [ -f "$harness.instrumented" ] && continue
         mv "$harness" "$harness.instrumented"
