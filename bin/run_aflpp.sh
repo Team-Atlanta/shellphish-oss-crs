@@ -1,15 +1,20 @@
 #!/bin/bash
 # OSS-CRS glue for Shellphish AFL++.
 #
-# If AFLPP_CPUS is set (comma-separated core list, e.g. "4,5,6,7,8,9"),
-# launches one AFL++ instance per core: 1 main + N-1 secondaries.
-# Each instance is pinned to its core via taskset.
-# If AFLPP_CPUS is not set, runs a single main instance (backward compatible).
+# Reads AFLPP_CPUS from entrypoint module's allocation file (SHARED_DIR/cpu_allocation).
+# Launches one AFL++ instance per core: 1 main + N-1 secondaries, each pinned via taskset.
 #
 # Shellphish's run_fuzzer script handles per-instance strategy selection:
 # main gets fixed config (timeout 5000, no cmplog/dict), secondaries get
 # randomized strategies (varying timeout, cmplog, dict, queue shuffling).
 set -eu
+
+# --- Wait for entrypoint module's CPU allocation ---
+ALLOC_FILE="/OSS_CRS_SHARED_DIR/cpu_allocation"
+echo "Waiting for CPU allocation from entrypoint module..."
+while [ ! -f "$ALLOC_FILE" ]; do sleep 1; done
+source "$ALLOC_FILE"
+echo "Got allocation: AFLPP_CPUS=${AFLPP_CPUS:-unset}"
 
 HARNESS="${OSS_CRS_TARGET_HARNESS}"
 
@@ -52,31 +57,22 @@ mkdir -p "$ARTIPHISHELL_FUZZER_SYNC_DIR" "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR"
 set +e
 PIDS=""
 
-if [ -n "${AFLPP_CPUS:-}" ]; then
-    # Multi-instance mode: one instance per core
-    IFS=',' read -ra CORES <<< "$AFLPP_CPUS"
-    NUM_CORES=${#CORES[@]}
-    echo "=== AFL++ multi-instance: $NUM_CORES cores (${AFLPP_CPUS}) ==="
+IFS=',' read -ra CORES <<< "$AFLPP_CPUS"
+NUM_CORES=${#CORES[@]}
+echo "=== AFL++ multi-instance: $NUM_CORES cores (${AFLPP_CPUS}) ==="
 
-    for i in "${!CORES[@]}"; do
-        CORE=${CORES[$i]}
-        if [ "$i" -eq 0 ]; then
-            INSTANCE_NAME="main"
-        else
-            INSTANCE_NAME="secondary_${i}"
-        fi
-        echo "Starting AFL++ instance '$INSTANCE_NAME' on core $CORE"
-        export ARTIPHISHELL_FUZZER_INSTANCE_NAME="$INSTANCE_NAME"
-        taskset -c "$CORE" run_fuzzer "$HARNESS" &
-        PIDS="$PIDS $!"
-    done
-else
-    # Single instance mode (backward compatible)
-    echo "=== AFL++ single instance ==="
-    export ARTIPHISHELL_FUZZER_INSTANCE_NAME="main"
-    run_fuzzer "$HARNESS" &
-    PIDS="$!"
-fi
+for i in "${!CORES[@]}"; do
+    CORE=${CORES[$i]}
+    if [ "$i" -eq 0 ]; then
+        INSTANCE_NAME="main"
+    else
+        INSTANCE_NAME="secondary_${i}"
+    fi
+    echo "Starting AFL++ instance '$INSTANCE_NAME' on core $CORE"
+    export ARTIPHISHELL_FUZZER_INSTANCE_NAME="$INSTANCE_NAME"
+    taskset -c "$CORE" run_fuzzer "$HARNESS" &
+    PIDS="$PIDS $!"
+done
 
 # --- Crash monitor: collect crashes from ALL instances ---
 collect_crashes() {

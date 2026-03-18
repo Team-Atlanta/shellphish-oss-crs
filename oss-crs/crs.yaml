@@ -8,6 +8,7 @@ prepare_phase:
   hcl: oss-crs/docker-bake.hcl
 
 target_build_phase:
+  # --- Fuzzer builds (compile target with instrumentation) ---
   - name: aflpp-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
     outputs:
@@ -22,7 +23,44 @@ target_build_phase:
     additional_env:
       BUILD_OUTPUT_NAME: build-libfuzzer
 
+  # --- Analysis chain (static analysis + indexing) ---
+  - name: clang-indexer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.builder
+    outputs:
+      - clang-index
+    additional_env:
+      BUILD_OUTPUT_NAME: clang-index
+  - name: codeql-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.builder
+    outputs:
+      - codeql-db
+    additional_env:
+      FUZZING_LANGUAGE: c
+      BUILD_OUTPUT_NAME: codeql-db
+
+  # --- Post-processing chain (depends on clang-index output) ---
+  - name: func-index-gen
+    dockerfile: shellphish-src/components/function-index-generator/Dockerfile
+    outputs:
+      - func-index
+    additional_env:
+      BUILD_OUTPUT_NAME: func-index
+  - name: semgrep-analysis
+    dockerfile: shellphish-src/components/semgrep/Dockerfile
+    outputs:
+      - semgrep-report
+    additional_env:
+      BUILD_OUTPUT_NAME: semgrep-report
+  - name: code-swipe
+    dockerfile: shellphish-src/components/code-swipe/Dockerfile
+    outputs:
+      - code-swipe-ranking
+    additional_env:
+      BUILD_OUTPUT_NAME: code-swipe-ranking
+
 crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
   aflpp_fuzzer:
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
   libfuzzer:
