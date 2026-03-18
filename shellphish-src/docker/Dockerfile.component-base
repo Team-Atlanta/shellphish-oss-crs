@@ -8,10 +8,13 @@ LABEL org.opencontainers.image.source=${SOURCE_REPO}
 COPY libs/c-instrumentation /shellphish/libs/c-instrumentation
 RUN mkdir /shellphish/blobs
 RUN wget https://software.intel.com/sites/landingpage/pintool/downloads/pin-external-3.31-98869-gfa6f126a8-gcc-linux.tar.gz -O /shellphish/blobs/pin.tar.gz
-RUN mkdir -p /shellphish/libs/nautilus/grammars/reference && \
-    curl http://beatty.unfiltered.seclab.cs.ucsb.edu:8000/corpus-grammars-v4.tar -o /shellphish/libs/nautilus/grammars/reference.tar && \
-    tar -xf /shellphish/libs/nautilus/grammars/reference.tar -C /shellphish/libs/nautilus/grammars/reference && \
-    rm /shellphish/libs/nautilus/grammars/reference.tar
+# [OSS-CRS glue] Server offline post-competition, create empty dir as placeholder.
+# See: memory/private_server_concerns.md for full list of affected downloads.
+# RUN mkdir -p /shellphish/libs/nautilus/grammars/reference && \
+#     curl http://beatty.unfiltered.seclab.cs.ucsb.edu:8000/corpus-grammars-v4.tar -o /shellphish/libs/nautilus/grammars/reference.tar && \
+#     tar -xf /shellphish/libs/nautilus/grammars/reference.tar -C /shellphish/libs/nautilus/grammars/reference && \
+#     rm /shellphish/libs/nautilus/grammars/reference.tar
+RUN mkdir -p /shellphish/libs/nautilus/grammars/reference
 ###################### END MISC ############################
 
 ###################### SNAPCHANGE QEMU #######################
@@ -54,8 +57,9 @@ RUN pip3 install -e /shellphish/libs/libcodeql
 ####################### COVERAGELIB #########################
 COPY libs/coveragelib /shellphish/libs/coveragelib/
 RUN pip3 install -e /shellphish/libs/coveragelib
-RUN wget http://beatty.unfiltered.seclab.cs.ucsb.edu:8000/llvm-dwarfdump -O /shellphish/libs/coveragelib/coveragelib/utils/llvm-dwarfdump
-RUN chmod +x /shellphish/libs/coveragelib/coveragelib/utils/llvm-dwarfdump
+# [OSS-CRS glue] Server offline post-competition. Code-Swipe DWARF fallback unavailable.
+# RUN wget http://beatty.unfiltered.seclab.cs.ucsb.edu:8000/llvm-dwarfdump -O /shellphish/libs/coveragelib/coveragelib/utils/llvm-dwarfdump
+# RUN chmod +x /shellphish/libs/coveragelib/coveragelib/utils/llvm-dwarfdump
 ##################### END COVERAGELIB #######################
 
 ###################### NAUTILUS ########################
@@ -92,5 +96,9 @@ COPY components/antlr4-guy/ /shellphish/components/antlr4-guy/
 COPY components/function-index-generator/ /shellphish/components/function-index-generator/
 COPY components/jazzer/ /shellphish/components/jazzer/
 ############
+
+# --- OSS-CRS glue: additional components for post-processing ---
+COPY components/semgrep/ /shellphish/components/semgrep/
+COPY components/code-swipe/ /shellphish/components/code-swipe/
 
 WORKDIR /

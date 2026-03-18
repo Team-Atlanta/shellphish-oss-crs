@@ -7,5 +7,12 @@ LABEL org.opencontainers.image.source=${SOURCE_REPO}
 
 RUN pip install semgrep
 
-COPY rules /shellphish_semgrep_rules
-COPY semgrep.py /semgrep.py
+COPY shellphish-src/components/semgrep/rules /shellphish_semgrep_rules
+COPY shellphish-src/components/semgrep/semgrep.py /semgrep.py
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_semgrep /usr/local/bin/run_semgrep
+RUN chmod +x /usr/local/bin/run_semgrep
+CMD ["run_semgrep"]

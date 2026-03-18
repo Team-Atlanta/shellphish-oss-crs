@@ -1,0 +1,36 @@
+#!/bin/bash
+# OSS-CRS glue: runs Shellphish's function-index-generator on clang-indexer output.
+# Reads: clang-index (from previous build step)
+# Writes: func-index (function indices for downstream consumers)
+set -euo pipefail
+
+# Download clang-indexer output from previous build step
+INPUT_DIR="/tmp/clang-index-input"
+libCRS download-build-output clang-index "$INPUT_DIR"
+
+# The clang-indexer writes function JSONs to $OUT/full/
+FUNCTIONS_JSON_DIR="$INPUT_DIR/full"
+if [ ! -d "$FUNCTIONS_JSON_DIR" ]; then
+    echo "ERROR: clang-indexer output not found at $FUNCTIONS_JSON_DIR"
+    echo "Contents of $INPUT_DIR:"
+    ls -la "$INPUT_DIR" 2>/dev/null || echo "(empty)"
+    exit 1
+fi
+
+OUTPUT_DIR="/tmp/func-index-output"
+mkdir -p "$OUTPUT_DIR"
+
+echo "=== Running Function Index Generator ==="
+echo "Input: $FUNCTIONS_JSON_DIR"
+echo "Output: $OUTPUT_DIR"
+
+python /shellphish/components/function-index-generator/indexer.py \
+    --mode full \
+    --input-target-functions-json-dir "$FUNCTIONS_JSON_DIR" \
+    --output-target-functions-index "$OUTPUT_DIR/indices.json" \
+    --output-functions-by-file-index-json "$OUTPUT_DIR/by_file.json"
+
+echo "=== Function Index Generator complete ==="
+ls -la "$OUTPUT_DIR"
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-func-index}"

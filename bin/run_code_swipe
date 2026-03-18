@@ -1,0 +1,61 @@
+#!/bin/bash
+# OSS-CRS glue: runs Shellphish's Code-Swipe to rank functions by vulnerability likelihood.
+# Reads: func-index + clang-index + semgrep-report (from previous build steps)
+# Writes: code-swipe-ranking
+set -euo pipefail
+
+# Download function index from previous build step
+FUNC_INDEX_DIR="/tmp/func-index-input"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+# Download function JSONs from clang-indexer
+CLANG_INDEX_DIR="/tmp/clang-index-input"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+# Download semgrep report (optional — code-swipe works without it)
+SEMGREP_DIR="/tmp/semgrep-input"
+libCRS download-build-output semgrep-report "$SEMGREP_DIR" 2>/dev/null || true
+
+# Source code from clang-index output
+REPO_PATH="$CLANG_INDEX_DIR/src"
+if [ ! -d "$REPO_PATH" ]; then
+    REPO_PATH="$CLANG_INDEX_DIR/original_workdir"
+fi
+if [ ! -d "$REPO_PATH" ]; then
+    REPO_PATH="/src"
+fi
+
+# Build project metadata YAML from OSS-CRS env vars
+METADATA_PATH="/tmp/project_metadata.yaml"
+LANG="${FUZZING_LANGUAGE:-c}"
+cat > "$METADATA_PATH" <<EOF
+language: $LANG
+EOF
+
+OUTPUT_DIR="/tmp/code-swipe-output"
+mkdir -p "$OUTPUT_DIR"
+
+echo "=== Running Code-Swipe ==="
+
+# Build arguments
+ARGS=(
+    --project-metadata-path "$METADATA_PATH"
+    --project-id "${OSS_CRS_TARGET:-unknown}"
+    --project-dir "$REPO_PATH"
+    --index-dir "$FUNC_INDEX_DIR"
+    --index-dir-json "$CLANG_INDEX_DIR/full"
+    --output-path "$OUTPUT_DIR/ranking.yaml"
+)
+
+# Add semgrep report if available
+if [ -f "$SEMGREP_DIR/vulnerable_functions.json" ]; then
+    ARGS+=(--semgrep-report-path "$SEMGREP_DIR/vulnerable_functions.json")
+fi
+
+cd /shellphish/components/code-swipe
+python -m src.main "${ARGS[@]}" || true
+
+echo "=== Code-Swipe complete ==="
+ls -la "$OUTPUT_DIR"
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-code-swipe-ranking}"

@@ -1,0 +1,56 @@
+#!/bin/bash
+# OSS-CRS glue: runs Shellphish's Semgrep analysis on target source.
+# Reads: func-index + clang-index (from previous build steps)
+# Source code comes from clang-index output (original_workdir/ or src/)
+# Writes: semgrep-report (vulnerability findings)
+set -euo pipefail
+
+# Download function index from previous build step
+FUNC_INDEX_DIR="/tmp/func-index-input"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+# Also need the raw function JSONs and source code from clang-indexer
+CLANG_INDEX_DIR="/tmp/clang-index-input"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+FUNCTIONS_JSON_DIR="$CLANG_INDEX_DIR/full"
+
+# Source code: clang-indexer's compile script copies workdir to /out/original_workdir
+# and /out/src (via the target's build.sh `cp -r`)
+REPO_PATH="$CLANG_INDEX_DIR/src"
+if [ ! -d "$REPO_PATH" ]; then
+    REPO_PATH="$CLANG_INDEX_DIR/original_workdir"
+fi
+if [ ! -d "$REPO_PATH" ]; then
+    echo "WARNING: No source code found in clang-index output, using /src"
+    REPO_PATH="/src"
+fi
+
+# Determine rules directory based on language
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    c|c++) RULES_DIR="/shellphish/components/semgrep/rules/c" ;;
+    jvm|java) RULES_DIR="/shellphish/components/semgrep/rules/java" ;;
+    *) RULES_DIR="/shellphish/components/semgrep/rules/c" ;;
+esac
+
+OUTPUT_DIR="/tmp/semgrep-output"
+mkdir -p "$OUTPUT_DIR"
+
+echo "=== Running Semgrep Analysis ==="
+echo "Repo: $REPO_PATH"
+echo "Rules: $RULES_DIR"
+
+python /shellphish/components/semgrep/semgrep.py \
+    --repo_path "$REPO_PATH" \
+    --rules_dir "$RULES_DIR" \
+    --full_functions_indices "$FUNC_INDEX_DIR/indices.json" \
+    --functions_json_dir "$FUNCTIONS_JSON_DIR" \
+    --raw_findings_file_path "$OUTPUT_DIR/raw_findings.json" \
+    --vulnerable_functions_file_path "$OUTPUT_DIR/vulnerable_functions.json" \
+    --local-run || true
+
+echo "=== Semgrep Analysis complete ==="
+ls -la "$OUTPUT_DIR"
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-semgrep-report}"

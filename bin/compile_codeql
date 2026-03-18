@@ -1,0 +1,16 @@
+#!/bin/bash
+# OSS-CRS glue: runs Shellphish's CodeQL compile (codeql database create + bundle),
+# then submits the database zip as build output.
+set -euo pipefail
+
+# Shellphish's compile script creates and bundles the CodeQL database.
+# Output: /work/sss-codeql-database.zip (and optionally -no-build.zip for Java)
+compile || true
+
+# Submit the database zip(s)
+CODEQL_OUT="/tmp/codeql-output"
+mkdir -p "$CODEQL_OUT"
+[ -f /work/sss-codeql-database.zip ] && cp /work/sss-codeql-database.zip "$CODEQL_OUT/"
+[ -f /work/sss-codeql-database-no-build.zip ] && cp /work/sss-codeql-database-no-build.zip "$CODEQL_OUT/"
+
+libCRS submit-build-output "$CODEQL_OUT" "${BUILD_OUTPUT_NAME:-codeql-db}"

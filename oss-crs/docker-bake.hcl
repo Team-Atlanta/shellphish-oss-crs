@@ -1,5 +1,5 @@
 group "default" {
-  targets = ["crs-aflpp-prebuild", "crs-libfuzzer-prebuild"]
+  targets = ["crs-aflpp-prebuild", "crs-libfuzzer-prebuild", "crs-clang-indexer-prebuild", "crs-codeql-prebuild", "crs-dependencies-base", "crs-component-base"]
 }
 
 target "crs-aflpp-prebuild" {
@@ -12,4 +12,31 @@ target "crs-libfuzzer-prebuild" {
   context    = "."
   dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.prebuild"
   tags       = ["crs-libfuzzer-prebuild:latest"]
+}
+
+target "crs-clang-indexer-prebuild" {
+  context    = "."
+  dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.prebuild"
+  tags       = ["crs-clang-indexer-prebuild:latest"]
+}
+
+target "crs-codeql-prebuild" {
+  context    = "."
+  dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.prebuild"
+  tags       = ["crs-codeql-prebuild:latest"]
+}
+
+target "crs-dependencies-base" {
+  context    = "shellphish-src"
+  dockerfile = "docker/Dockerfile.dependencies-base"
+  tags       = ["aixcc-dependencies-base:latest"]
+}
+
+target "crs-component-base" {
+  context    = "shellphish-src"
+  dockerfile = "docker/Dockerfile.component-base"
+  tags       = ["aixcc-component-base:latest"]
+  contexts   = {
+    "aixcc-dependencies-base:latest" = "target:crs-dependencies-base"
+  }
 }
