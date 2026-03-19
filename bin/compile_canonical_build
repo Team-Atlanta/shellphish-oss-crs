@@ -1,0 +1,35 @@
+#!/bin/bash
+# OSS-CRS glue: canonical build entry point.
+# Replicates Shellphish's canonical_build (preprocessing.yaml:505-593).
+set -uo pipefail
+source "$(dirname "$0")/shellphish_build_helpers.sh"
+
+setup_ccache
+compile; RETCODE=$?
+
+# preserve source (canonical_build uses --preserve-built-src-dir, project.py:1042)
+cp -r /src /out/.shellphish_src 2>/dev/null || true
+
+run_post_build_commands "$OUT"
+
+# Package canonical project directory
+CANONICAL_OUT="/tmp/canonical-build"
+mkdir -p "$CANONICAL_OUT/artifacts/out" "$CANONICAL_OUT/artifacts/docker"
+cp -r "$OUT"/. "$CANONICAL_OUT/artifacts/out/"
+if [ -d "${OSS_CRS_PROJ_PATH:-}" ]; then
+    cp "$OSS_CRS_PROJ_PATH/Dockerfile" "$CANONICAL_OUT/" 2>/dev/null || true
+    cp "$OSS_CRS_PROJ_PATH/project.yaml" "$CANONICAL_OUT/" 2>/dev/null || true
+    cp "$OSS_CRS_PROJ_PATH/build.sh" "$CANONICAL_OUT/" 2>/dev/null || true
+fi
+
+# Build metadata (project.py:1158-1169)
+cat > "$CANONICAL_OUT/artifacts/out/shellphish_build_metadata.yaml" <<METAEOF
+fuzzing_engine: ${FUZZING_ENGINE:-libfuzzer}
+project_name: ${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}
+sanitizer: ${SANITIZER:-address}
+source_repo_path: "$PWD"
+architecture: ${ARCHITECTURE:-x86_64}
+METAEOF
+
+libCRS submit-build-output "$CANONICAL_OUT" "${BUILD_OUTPUT_NAME:-build-canonical}"
+exit $RETCODE

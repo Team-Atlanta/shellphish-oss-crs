@@ -28,6 +28,9 @@ RUN curl -fsSL https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linu
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
-COPY bin/compile_target /usr/local/bin/compile_target
-RUN chmod +x /usr/local/bin/compile_target
-CMD ["compile_target"]
+COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
+COPY bin/compile_canonical_build /usr/local/bin/compile_canonical_build
+COPY bin/compile_shellphish_libfuzzer /usr/local/bin/compile_shellphish_libfuzzer
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_canonical_build /usr/local/bin/compile_shellphish_libfuzzer
+# Shared Dockerfile: dispatch by BUILD_OUTPUT_NAME (canonical-build vs libfuzzer-build)
+CMD ["bash", "-c", "if [ \"${BUILD_OUTPUT_NAME}\" = 'build-canonical' ]; then exec compile_canonical_build; else exec compile_shellphish_libfuzzer; fi"]

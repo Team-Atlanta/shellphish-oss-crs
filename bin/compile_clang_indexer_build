@@ -1,11 +1,10 @@
 #!/bin/bash
 # OSS-CRS glue: runs Shellphish's clang-indexer compile (Bear + clang-indexer),
 # then submits the function JSONs and compile_commands as build output.
-set -euo pipefail
+set -uo pipefail
+source "$(dirname "$0")/shellphish_build_helpers.sh"
 
-# Shellphish's compile script uses `git rev-parse HEAD` which fails when
-# the target source has a submodule .git file pointing outside the container.
-# Fix: detect broken .git reference and re-init as a standalone repo.
+# Handle broken submodule .git references in test environment
 if ! git rev-parse HEAD 2>/dev/null; then
     rm -rf .git 2>/dev/null || true
     git init . 2>/dev/null || true
@@ -13,7 +12,10 @@ if ! git rev-parse HEAD 2>/dev/null; then
     git -c user.email="oss-crs@local" -c user.name="oss-crs" commit -m "oss-crs standalone" --allow-empty 2>/dev/null || true
 fi
 
+setup_ccache
 export ALLOW_BUILD_FAIL=1
-compile
+compile; RETCODE=$?
+run_post_build_commands "$OUT"
 
 libCRS submit-build-output "$OUT" "${BUILD_OUTPUT_NAME:-clang-index}"
+exit $RETCODE

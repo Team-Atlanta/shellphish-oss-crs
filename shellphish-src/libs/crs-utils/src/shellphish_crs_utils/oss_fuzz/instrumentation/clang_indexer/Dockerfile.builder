@@ -35,6 +35,7 @@ COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumenta
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
-COPY bin/compile_clang_indexer /usr/local/bin/compile_clang_indexer
-RUN chmod +x /usr/local/bin/compile_clang_indexer
-CMD ["compile_clang_indexer"]
+COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
+COPY bin/compile_clang_indexer_build /usr/local/bin/compile_clang_indexer_build
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_clang_indexer_build
+CMD ["compile_clang_indexer_build"]

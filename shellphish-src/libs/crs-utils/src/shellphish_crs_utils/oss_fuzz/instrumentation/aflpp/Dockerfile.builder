@@ -37,6 +37,7 @@ COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumenta
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
-COPY bin/compile_target /usr/local/bin/compile_target
-RUN chmod +x /usr/local/bin/compile_target
-CMD ["compile_target"]
+COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
+COPY bin/compile_aflpp_build /usr/local/bin/compile_aflpp_build
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_aflpp_build
+CMD ["compile_aflpp_build"]

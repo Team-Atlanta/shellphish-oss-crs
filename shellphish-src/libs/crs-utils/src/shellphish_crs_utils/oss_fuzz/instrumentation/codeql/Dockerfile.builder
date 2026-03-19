@@ -22,6 +22,7 @@ COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumenta
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
-COPY bin/compile_codeql /usr/local/bin/compile_codeql
-RUN chmod +x /usr/local/bin/compile_codeql
-CMD ["compile_codeql"]
+COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
+COPY bin/compile_codeql_build /usr/local/bin/compile_codeql_build
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_codeql_build
+CMD ["compile_codeql_build"]
