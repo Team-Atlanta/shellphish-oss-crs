@@ -1,0 +1,122 @@
+#!/bin/bash
+# OSS-CRS glue: AIJON fuzzer run module.
+# Waits for compiled binary from aijon_builder (via SHARED_DIR),
+# then launches multi-instance AFL++/IJON fuzzing.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+echo "=== AIJON Fuzzer starting: harness=$HARNESS project=$PROJECT ==="
+
+# --- Wait for CPU allocation from entrypoint module ---
+ALLOC_FILE="/OSS_CRS_SHARED_DIR/cpu_allocation"
+echo "Waiting for CPU allocation from entrypoint module..."
+while [ ! -f "$ALLOC_FILE" ]; do sleep 1; done
+source "$ALLOC_FILE"
+echo "Got allocation: AIJON_CPUS=${AIJON_CPUS:-unset}"
+
+# --- Wait for compiled binary from aijon_builder ---
+BUILD_OUT="$SHARED/aijon_build"
+echo "Waiting for AIJON build output..."
+while [ ! -f "$BUILD_OUT/.done" ]; do sleep 5; done
+echo "Build output ready."
+
+# --- Install compiled binary to /out ---
+export OUT=/out
+mkdir -p "$OUT"
+cp -r "$BUILD_OUT"/. "$OUT/" 2>/dev/null || true
+rm -f "$OUT/.done"
+echo "Build output installed to $OUT"
+
+# --- Verify harness binary exists ---
+if [ ! -f "$OUT/$HARNESS" ]; then
+    echo "ERROR: Harness binary '$HARNESS' not found in $OUT"
+    ls -la "$OUT/" | head -20
+    exit 1
+fi
+
+# --- Set up fuzzing directories ---
+POV_DIR="/tmp/povs"
+mkdir -p "$POV_DIR"
+
+SYNC_BASE="/OSS_CRS_SHARED_DIR/fuzzer_sync"
+SYNC_DIR="${SYNC_BASE}/${PROJECT}-${HARNESS}-0"
+mkdir -p "$SYNC_DIR"
+
+# --- Register PoV submission ---
+libCRS register-submit-dir pov "$POV_DIR" &
+
+# --- Common env vars for run_fuzzer ---
+export PATH="$OUT:$PATH"
+export LD_LIBRARY_PATH="${OUT}:${LD_LIBRARY_PATH:-}"
+export ARTIPHISHELL_PROJECT_NAME="$PROJECT"
+export ARTIPHISHELL_HARNESS_NAME="$HARNESS"
+export ARTIPHISHELL_HARNESS_INFO_ID="0"
+export ARTIPHISHELL_FUZZER_SYNC_DIR="$SYNC_DIR"
+export ARTIPHISHELL_INTER_HARNESS_SYNC_DIR="/tmp/foreign_fuzzer"
+export ARTIPHISHELL_AFL_EXTRA_ARGS=""
+export ARTIPHISHELL_AFL_TIMEOUT=""
+export FUZZING_ENGINE="shellphish_aijon"
+export RUN_FUZZER_MODE="interactive"
+export SANITIZER="${SANITIZER:-address}"
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_odr_violation=0:abort_on_error=1:symbolize=0}"
+export MSAN_OPTIONS="${MSAN_OPTIONS:-exit_code=86:symbolize=0}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-symbolize=0}"
+
+# AFL++ container environment
+export AFL_SKIP_CPUFREQ=1
+export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1
+echo core > /proc/sys/kernel/core_pattern 2>/dev/null || true
+sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+
+mkdir -p "$ARTIPHISHELL_FUZZER_SYNC_DIR" "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR"
+
+# --- Launch AFL++ instances ---
+echo "=== Launching AFL++ IJON fuzzing ==="
+cd "$OUT"
+set +e
+PIDS=""
+
+IFS=',' read -ra CORES <<< "$AIJON_CPUS"
+NUM_CORES=${#CORES[@]}
+echo "AFL++ IJON multi-instance: $NUM_CORES cores (${AIJON_CPUS})"
+
+for i in "${!CORES[@]}"; do
+    CORE=${CORES[$i]}
+    if [ "$i" -eq 0 ]; then
+        INSTANCE_NAME="main"
+    else
+        INSTANCE_NAME="secondary_${i}"
+    fi
+    echo "Starting AFL++ IJON instance '$INSTANCE_NAME' on core $CORE"
+    export ARTIPHISHELL_FUZZER_INSTANCE_NAME="$INSTANCE_NAME"
+    taskset -c "$CORE" run_fuzzer "$HARNESS" &
+    PIDS="$PIDS $!"
+done
+
+# --- Crash monitor ---
+collect_crashes() {
+    for instance_dir in "$ARTIPHISHELL_FUZZER_SYNC_DIR"/*/crashes; do
+        [ -d "$instance_dir" ] || continue
+        for crash in "$instance_dir"/id:*; do
+            [ -f "$crash" ] || continue
+            bn=$(basename "$crash")
+            [ -f "$POV_DIR/$bn" ] || cp "$crash" "$POV_DIR/$bn" 2>/dev/null || true
+        done
+    done
+}
+
+while true; do
+    ALIVE=false
+    for pid in $PIDS; do
+        kill -0 "$pid" 2>/dev/null && ALIVE=true
+    done
+    $ALIVE || break
+    collect_crashes
+    sleep 5
+done
+
+collect_crashes
+wait || true
+echo "AIJON AFL++ fuzzer(s) exited."

@@ -1,5 +1,8 @@
-ARG BASE_IMAGE=
-FROM ghcr.io/aixcc-finals/base-builder:v1.0.0 AS aijon-afl-compile-base
+# OSS-CRS passes target_base_image; map to BASE_IMAGE for compatibility
+ARG target_base_image=ghcr.io/aixcc-finals/base-builder:v1.0.0
+ARG BASE_IMAGE=${target_base_image}
+# [OSS-CRS glue] Use v1.3.0 to match target base image LLVM version (pitfall: LLVM version mismatch)
+FROM ghcr.io/aixcc-finals/base-builder:v1.3.0 AS aijon-afl-compile-base
 
 RUN apt-get update && apt-get install -y gcc g++
 RUN apt-get update && \

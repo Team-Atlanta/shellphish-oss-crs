@@ -1,11 +1,24 @@
 group "default" {
-  targets = ["crs-aflpp-prebuild", "crs-libfuzzer-prebuild", "crs-clang-indexer-prebuild", "crs-codeql-prebuild", "crs-dependencies-base", "crs-component-base"]
+  targets = ["crs-aflpp-prebuild", "crs-aijon-prebuild", "crs-jazzer-prebuild", "crs-libfuzzer-prebuild", "crs-clang-indexer-prebuild", "crs-codeql-prebuild", "crs-dependencies-base", "crs-component-base"]
 }
 
 target "crs-aflpp-prebuild" {
   context    = "."
   dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.prebuild"
   tags       = ["crs-aflpp-prebuild:latest"]
+}
+
+target "crs-aijon-prebuild" {
+  context    = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aijon"
+  dockerfile = "Dockerfile.c.builder"
+  target     = "aijon-afl-compile-base"
+  tags       = ["crs-aijon-prebuild:latest"]
+}
+
+target "crs-jazzer-prebuild" {
+  context    = "."
+  dockerfile = "shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/Dockerfile.prebuild"
+  tags       = ["crs-jazzer-prebuild:latest"]
 }
 
 target "crs-libfuzzer-prebuild" {

@@ -1,0 +1,225 @@
+#!/bin/bash
+# OSS-CRS glue: AIJON builder run module.
+# Downloads source, waits for IJON patch from instrumentation,
+# applies patch, compiles with AFL++/IJON, runs LLM fixer if compile fails.
+# Outputs compiled binary (/out/) to SHARED_DIR for aijon_fuzzer.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+LANGUAGE="${OSS_CRS_TARGET_LANGUAGE:-c}"
+echo "=== AIJON Builder starting: harness=$HARNESS project=$PROJECT language=$LANGUAGE ==="
+
+# --- LLM configuration (for fixer agent) ---
+export USE_LLM_API=1
+export AIXCC_LITELLM_HOSTNAME="${OSS_CRS_LLM_API_URL:-${AIXCC_LITELLM_HOSTNAME:-http://litellm.crs-shellphish:4000}}"
+export LITELLM_KEY="${OSS_CRS_LLM_API_KEY:-${LITELLM_KEY:-}}"
+export OPENAI_API_KEY="${LITELLM_KEY}"
+export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+
+# --- Obtain source code ---
+# target_base_image has the build environment but may not have source code.
+# Download from build-canonical which preserves source at .shellphish_src/.
+CANONICAL_DIR="/tmp/build-canonical"
+mkdir -p "$CANONICAL_DIR"
+libCRS download-build-output build-canonical "$CANONICAL_DIR"
+echo "Build-canonical downloaded."
+
+# .shellphish_src is a snapshot of the full /src/ tree (not just WORKDIR)
+PRESERVED_SRC="$CANONICAL_DIR/artifacts/out/.shellphish_src"
+if [ -d "$PRESERVED_SRC" ] && [ -n "$(ls -A "$PRESERVED_SRC" 2>/dev/null)" ]; then
+    echo "Copying preserved source to /src/"
+    cp -r "$PRESERVED_SRC"/. /src/ 2>/dev/null || true
+    echo "Source installed from build-canonical to /src/"
+else
+    echo "WARNING: No preserved source in build-canonical"
+fi
+
+# --- Wait for AIJON instrumentation patch ---
+AIJON_ARTIFACTS="$SHARED/aijon_artifacts"
+echo "Waiting for AIJON instrumentation artifacts..."
+WAIT_CTR=0
+while [ ! -f "$AIJON_ARTIFACTS/.done" ]; do
+    sleep 5
+    WAIT_CTR=$((WAIT_CTR + 1))
+    PATCH_TIMEOUT=${AIJON_PATCH_TIMEOUT:-360}
+    if [ $WAIT_CTR -ge $PATCH_TIMEOUT ]; then  # default 30 minutes (360 * 5s)
+        echo "ERROR: Timeout waiting for AIJON instrumentation. Continuing without IJON patch."
+        break
+    fi
+done
+
+PATCH_FILE="$AIJON_ARTIFACTS/aijon_instrumentation.patch"
+ALLOWLIST_FILE="$AIJON_ARTIFACTS/aijon_allowlist.txt"
+
+if [ ! -f "$PATCH_FILE" ]; then
+    echo "WARNING: No AIJON patch found. Falling back to standard AFL++ compilation."
+    HAVE_IJON_PATCH=false
+else
+    HAVE_IJON_PATCH=true
+    echo "AIJON patch found: $PATCH_FILE"
+    echo "--- Patch preview (first 50 lines) ---"
+    head -50 "$PATCH_FILE" || true
+fi
+
+# --- Detect source subdir for patch application ---
+# The AIJON instrumentation generates patches relative to the source subdir
+# (e.g., mock-c/), matching what run_aijon_instrumentation detects.
+# The container's WORKDIR is typically set to this subdir (e.g., /src/mock-c).
+PATCH_DIR="$(pwd)"  # WORKDIR from target Dockerfile (e.g., /src/mock-c)
+if [ "$PATCH_DIR" = "/src" ] || [ "$PATCH_DIR" = "/src/" ]; then
+    PATCH_DIR="/src"
+fi
+echo "Patch application directory: $PATCH_DIR"
+
+# --- Initialize git in patch dir ---
+cd "$PATCH_DIR"
+git config --global --add safe.directory '*' 2>/dev/null || true
+rm -f .git 2>/dev/null || true  # Remove submodule .git file (not dir)
+if [ ! -d .git ]; then
+    git init
+    git add -A
+    git commit -m "initial" --allow-empty 2>/dev/null || true
+fi
+
+# --- Apply AIJON patch ---
+if [ "$HAVE_IJON_PATCH" = true ]; then
+    echo "Applying AIJON instrumentation patch in $PATCH_DIR..."
+    git apply "$PATCH_FILE" || {
+        echo "WARNING: git apply failed, trying with --3way"
+        git apply --3way "$PATCH_FILE" || {
+            echo "ERROR: Could not apply AIJON patch"
+            HAVE_IJON_PATCH=false
+        }
+    }
+fi
+
+# --- Set up AFL++/IJON compile environment ---
+export OUT=/out
+export WORK=/work
+mkdir -p "$OUT" "$WORK"
+
+export FUZZING_ENGINE=shellphish_aijon
+export SANITIZER="${SANITIZER:-address}"
+export ARCHITECTURE="${ARCHITECTURE:-x86_64}"
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_odr_violation=0:abort_on_error=1:symbolize=0}"
+export MSAN_OPTIONS="${MSAN_OPTIONS:-exit_code=86:symbolize=0}"
+export UBSAN_OPTIONS="${UBSAN_OPTIONS:-symbolize=0}"
+export LIB_FUZZING_ENGINE="$OUT/libAFLDriver.a"
+export SRC=/src
+export ARTIPHISHELL_CCACHE_DISABLE=1
+
+# Set IJON-specific AFL++ env vars
+if [ "$HAVE_IJON_PATCH" = true ] && [ -f "$ALLOWLIST_FILE" ]; then
+    cp "$ALLOWLIST_FILE" "$OUT/aijon_allowlist.txt"
+    export AFL_ALLOW_LIST="$OUT/aijon_allowlist.txt"
+fi
+
+# --- Compile ---
+echo "=== Compiling with AFL++/IJON instrumentation ==="
+
+source /usr/local/bin/compile_shellphish_aijon
+
+compile_target() {
+    set +e
+    cd /src
+    bash -eu /src/build.sh 2>&1
+    local ret=$?
+    set -e
+    return $ret
+}
+
+# First attempt
+COMPILE_OUTPUT_FILE=$(mktemp /tmp/aijon_compile.XXXXXX)
+compile_target > "$COMPILE_OUTPUT_FILE" 2>&1
+RET_CODE=$?
+
+# --- Fixer loop (LLM compile error recovery) ---
+CTR=0
+while [ "$RET_CODE" -ne 0 ] && [ "$HAVE_IJON_PATCH" = true ]; do
+    if [ $CTR -ge 10 ]; then
+        echo "Could not successfully compile after 10 iterations. Continuing without IJON."
+        cd "$PATCH_DIR"
+        git checkout . 2>/dev/null || true
+        unset AFL_ALLOW_LIST
+        compile_target > "$COMPILE_OUTPUT_FILE" 2>&1
+        RET_CODE=$?
+        break
+    fi
+    CTR=$((CTR + 1))
+    echo "Compile failed (attempt $CTR/10). Running LLM fixer..."
+
+    # Extract error context
+    STDERR_FILE=$(mktemp /tmp/aijon_stderr.XXXXXX)
+    grep -E '[Ee]rror:' -B5 -A5 "$COMPILE_OUTPUT_FILE" > "$STDERR_FILE" 2>/dev/null || true
+
+    if [ ! -s "$STDERR_FILE" ]; then
+        echo "No recognizable errors found in compile output. Full output:"
+        cat "$COMPILE_OUTPUT_FILE"
+        break
+    fi
+
+    # Run fixer (LLM agent removes problematic IJON statements)
+    FIXER_DIR=$(mktemp -d)
+    set +e
+    python /aijon/fixer.py \
+        --target_source "$PATCH_DIR" \
+        --patch_path "$PATCH_FILE" \
+        --stderr_log "$STDERR_FILE" \
+        --destination "$FIXER_DIR"
+    FIXER_RET=$?
+    set -e
+
+    if [ $FIXER_RET -ne 0 ] || [ ! -f "$FIXER_DIR/aijon_instrumentation.patch" ]; then
+        echo "Fixer agent failed. Reverting to clean source."
+        cd "$PATCH_DIR"
+        git checkout . 2>/dev/null || true
+        unset AFL_ALLOW_LIST
+        compile_target > "$COMPILE_OUTPUT_FILE" 2>&1
+        RET_CODE=$?
+        break
+    fi
+
+    # Apply fixed patch
+    PATCH_FILE="$FIXER_DIR/aijon_instrumentation.patch"
+    cd "$PATCH_DIR"
+    git checkout . 2>/dev/null || true
+    git apply "$PATCH_FILE" || {
+        echo "Fixed patch could not be applied. Giving up on IJON."
+        unset AFL_ALLOW_LIST
+        compile_target > "$COMPILE_OUTPUT_FILE" 2>&1
+        RET_CODE=$?
+        break
+    }
+
+    # Retry compile
+    compile_target > "$COMPILE_OUTPUT_FILE" 2>&1
+    RET_CODE=$?
+done
+
+if [ "$RET_CODE" -ne 0 ]; then
+    echo "ERROR: Compilation failed."
+    cat "$COMPILE_OUTPUT_FILE"
+    exit 1
+fi
+echo "=== Compilation successful ==="
+
+# --- Copy seed corpus from AIJON instrumentation ---
+for zip_file in "$AIJON_ARTIFACTS"/*_seed_corpus.zip; do
+    [ -f "$zip_file" ] || continue
+    cp "$zip_file" "$OUT/" 2>/dev/null || true
+    echo "Copied seed corpus: $(basename "$zip_file")"
+done
+
+# --- Output compiled binary to SHARED_DIR ---
+BUILD_OUT="$SHARED/aijon_build"
+mkdir -p "$BUILD_OUT"
+cp -r /out/. "$BUILD_OUT/" 2>/dev/null || true
+touch "$BUILD_OUT/.done"
+echo "=== Build output written to $BUILD_OUT ==="
+ls -la "$BUILD_OUT/" | head -20
+
+# Keep alive — OSS-CRS Compose shuts down all containers when any exits
+exec sleep infinity

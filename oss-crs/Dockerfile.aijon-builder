@@ -1,0 +1,80 @@
+# [OSS-CRS glue] AIJON builder run module.
+# Applies IJON patch from instrumentation, compiles target with AFL++/IJON.
+# If compile fails, uses LLM fixer agent to fix the patch (up to 10 retries).
+# Outputs compiled binary to SHARED_DIR for aijon_fuzzer.
+#
+# Based on Dockerfile.c.builder Stage 2 (final-builder) pattern:
+# target_base_image provides source + build deps, prebuild provides AFL++ IJON.
+
+# OSS-CRS passes target_base_image; map to BASE_IMAGE for compatibility
+ARG target_base_image
+ARG BASE_IMAGE=${target_base_image}
+ARG AIJON_PREBUILD_IMAGE=crs-aijon-prebuild:latest
+
+FROM ${AIJON_PREBUILD_IMAGE} AS prebuild
+
+FROM ${BASE_IMAGE}
+
+# --- [original: Dockerfile.c.builder Stage 2 lines] ---
+RUN mv /usr/bin/ld /usr/bin/ld.real
+COPY shellphish-src/libs/c-instrumentation/anti-wrap-ld.sh /usr/bin/ld
+RUN chmod +x /usr/bin/ld
+
+RUN mkdir -p $SRC/shellphish
+COPY --from=prebuild $SRC/shellphish/aflplusplus $SRC/shellphish/aflplusplus
+RUN cat $SRC/shellphish/aflplusplus/src/afl-fuzz-run.c | grep "SHELLPHISH"
+
+RUN apt-get update && apt-get install -y gcc g++
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    gcc-9-plugin-dev \
+    libstdc++-9-dev \
+    patchelf
+
+ENV AFL_PATH=$SRC/shellphish/aflplusplus
+
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aijon/compile_shellphish_aijon /usr/local/bin/
+
+# --- OSS-CRS glue: Python deps for fixer agent ---
+RUN pip install --upgrade pip
+RUN pip install ipython ipdb rich pyyaml unidiff loguru
+
+COPY shellphish-src/libs/aijon-lib /shellphish/libs/aijon-lib
+COPY shellphish-src/libs/crs-utils /shellphish/libs/crs-utils
+COPY shellphish-src/libs/agentlib /shellphish/libs/agentlib
+RUN pip install --editable /shellphish/libs/crs-utils
+RUN pip install --editable /shellphish/libs/agentlib
+RUN pip install --editable /shellphish/libs/aijon-lib
+
+# --- OSS-CRS glue: AIJON component files (fixer.py) ---
+COPY shellphish-src/components/aijon/ /aijon/
+
+# --- OSS-CRS glue: libCRS ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+
+# --- OSS-CRS glue: entry point ---
+COPY bin/run_aijon_builder /usr/local/bin/run_aijon_builder
+RUN chmod +x /usr/local/bin/run_aijon_builder
+
+# --- Environment ---
+ENV OTEL_SDK_DISABLED=true
+ENV LITELLM_KEY=
+ENV USE_LLM_API=1
+# Disable agentlib file saving to prevent large amount of debugging files in container
+ENV AGENTLIB_SAVE_FILES=off
+
+# [OSS-CRS glue] Map model names to external litellm-compatible names
+RUN find /aijon /shellphish -name "*.py" -exec sed -i \
+    -e 's/claude-4-sonnet/claude-sonnet-4-6/g' \
+    -e 's/claude-4-opus/claude-opus-4-6/g' \
+    -e 's/claude-3\.7-sonnet/claude-sonnet-4-6/g' \
+    -e 's/claude-3\.5-sonnet/claude-3-5-sonnet-20241022/g' \
+    -e 's/gpt-o4-mini/o4-mini/g' \
+    -e 's/gpt-o3-mini/o3-mini/g' \
+    -e 's/gpt-o3/o3/g' \
+    -e 's/oai-//g' \
+    {} + 2>/dev/null || true
+
+CMD ["run_aijon_builder"]

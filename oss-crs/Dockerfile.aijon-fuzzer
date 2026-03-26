@@ -1,0 +1,26 @@
+# [OSS-CRS glue] AIJON fuzzer run module.
+# Based on Dockerfile.c.runner: lightweight container that runs AFL++/IJON fuzzing.
+# Compiled binary comes from aijon_builder via SHARED_DIR.
+
+# OSS-CRS passes target_base_image; map to BASE_IMAGE for compatibility
+ARG target_base_image
+ARG BASE_IMAGE=${target_base_image}
+
+FROM ${BASE_IMAGE}
+
+# --- [original: Dockerfile.c.runner lines] ---
+RUN apt-get update && apt-get install -y jq rsync
+
+ENV AFL_PATH=$OUT
+
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aijon/run_fuzzer /usr/local/bin/
+
+# --- OSS-CRS glue: libCRS ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+
+# --- OSS-CRS glue: entry point ---
+COPY bin/run_aijon_fuzzer /usr/local/bin/run_aijon_fuzzer
+RUN chmod +x /usr/local/bin/run_aijon_fuzzer
+
+CMD ["run_aijon_fuzzer"]

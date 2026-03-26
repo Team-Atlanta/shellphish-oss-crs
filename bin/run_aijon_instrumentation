@@ -1,0 +1,175 @@
+#!/bin/bash
+# OSS-CRS glue: AIJON instrumentation run module.
+# Downloads build outputs, runs LLM-driven IJON instrumentation,
+# outputs patch + allowlist + seeds to SHARED_DIR for aijon_fuzzer.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+LANGUAGE="${OSS_CRS_TARGET_LANGUAGE:-c}"
+echo "=== AIJON Instrumentation starting: harness=$HARNESS project=$PROJECT language=$LANGUAGE ==="
+
+# --- Download build outputs ---
+CANONICAL_DIR="/tmp/build-canonical"
+mkdir -p "$CANONICAL_DIR"
+libCRS download-build-output build-canonical "$CANONICAL_DIR"
+
+RANKING_DIR="/tmp/code-swipe-ranking"
+mkdir -p "$RANKING_DIR"
+libCRS download-build-output code-swipe-ranking "$RANKING_DIR"
+
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+CLANG_INDEX_DIR="/tmp/clang-index"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+echo "Build outputs downloaded."
+
+# --- Locate source code from canonical build ---
+# compile_canonical_build preserves source at artifacts/out/.shellphish_src/
+PRESERVED_SOURCE="$CANONICAL_DIR/artifacts/out/.shellphish_src"
+if [ ! -d "$PRESERVED_SOURCE" ]; then
+    echo "ERROR: Source not found at $PRESERVED_SOURCE"
+    echo "Contents of canonical dir:"
+    find "$CANONICAL_DIR" -maxdepth 3 -type d
+    exit 1
+fi
+
+TARGET_SOURCE="$PRESERVED_SOURCE"
+
+# --- Locate code-swipe report ---
+CODESWIPE_REPORT=$(find "$RANKING_DIR" -name "*.yaml" -o -name "*.yml" | head -1)
+if [ -z "$CODESWIPE_REPORT" ]; then
+    echo "ERROR: No code-swipe report found in $RANKING_DIR"
+    find "$RANKING_DIR" -type f
+    exit 1
+fi
+echo "Code-swipe report: $CODESWIPE_REPORT"
+
+# --- Locate function indices ---
+FULL_FUNCTION_INDICES="$FUNC_INDEX_DIR/indices.json"
+if [ ! -f "$FULL_FUNCTION_INDICES" ]; then
+    # Try alternative names
+    FULL_FUNCTION_INDICES=$(find "$FUNC_INDEX_DIR" -name "*.json" | head -1)
+fi
+echo "Function indices: $FULL_FUNCTION_INDICES"
+
+# --- Locate function JSONs directory ---
+TARGET_FUNCTIONS_JSON_DIR="$CLANG_INDEX_DIR/full"
+if [ ! -d "$TARGET_FUNCTIONS_JSON_DIR" ]; then
+    # Try alternative location
+    TARGET_FUNCTIONS_JSON_DIR=$(find "$CLANG_INDEX_DIR" -name "full" -type d | head -1)
+    if [ -z "$TARGET_FUNCTIONS_JSON_DIR" ]; then
+        TARGET_FUNCTIONS_JSON_DIR="$CLANG_INDEX_DIR"
+    fi
+fi
+echo "Function JSONs dir: $TARGET_FUNCTIONS_JSON_DIR"
+
+# --- Detect source subdirectory ---
+# The function index keys use paths like /src/mock-c/mock.c, with focus_repo_relative_path
+# being just "mock.c". The target_source must point to the directory containing mock.c.
+# Detect source subdir from code-swipe ranking's function_index_key.
+if [ -f "$CODESWIPE_REPORT" ]; then
+    SRC_SUBDIR=$(python3 -c "
+import yaml, os
+with open('$CODESWIPE_REPORT') as f:
+    data = yaml.safe_load(f)
+for item in data.get('ranking', []):
+    key = item.get('function_index_key', '')
+    fname = item.get('filename', '')
+    path = key.split(':')[0]
+    rel = path.replace('/src/', '', 1)
+    dirname = os.path.dirname(rel)
+    if dirname and dirname != fname:
+        print(dirname)
+        break
+" 2>/dev/null)
+    if [ -n "$SRC_SUBDIR" ] && [ -d "$PRESERVED_SOURCE/$SRC_SUBDIR" ]; then
+        TARGET_SOURCE="$PRESERVED_SOURCE/$SRC_SUBDIR"
+        echo "Source subdir detected from ranking: $SRC_SUBDIR → $TARGET_SOURCE"
+    fi
+fi
+
+# --- Prepare output directory ---
+AIJON_ARTIFACTS="$SHARED/aijon_artifacts"
+mkdir -p "$AIJON_ARTIFACTS"
+
+# --- Initialize git in source dir (ag_utils needs git for diff) ---
+# Remove stale .git file from submodule reference (test targets are submodules,
+# their .git files point outside the container). Re-init as standalone repo.
+echo "Initializing git in source directory for diff support..."
+git config --global --add safe.directory "$TARGET_SOURCE" 2>/dev/null || true
+rm -f "$TARGET_SOURCE/.git" 2>/dev/null || true  # Remove submodule .git file (not dir)
+cd "$TARGET_SOURCE"
+if [ ! -d .git ]; then
+    git init 2>/dev/null || true
+fi
+git add -A 2>/dev/null || true
+git commit -m "initial" --allow-empty 2>/dev/null || true
+cd -
+
+# --- Set environment for AIJON ---
+export OSSCRS_INTEGRATION_MODE=1
+export LANGUAGE="$LANGUAGE"
+export PROJECT_NAME="$PROJECT"
+export LOCAL_RUN="1"
+export POI_TYPE="codeswipe"
+
+# LLM configuration (same pattern as DiscoveryGuy/Grammar-Guy)
+export USE_LLM_API=1
+export AIXCC_LITELLM_HOSTNAME="${OSS_CRS_LLM_API_URL:-${AIXCC_LITELLM_HOSTNAME:-http://litellm.crs-shellphish:4000}}"
+export LITELLM_KEY="${OSS_CRS_LLM_API_KEY:-${LITELLM_KEY:-}}"
+export OPENAI_API_KEY="${LITELLM_KEY}"
+export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
+
+# Telemetry: disable
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+
+# Neo4j (for AG queries — optional, degrades gracefully)
+export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687}"
+
+# Wait for Neo4j to be ready (if AG is available, improves instrumentation quality)
+echo "Waiting for Neo4j to be ready (max 60s)..."
+NEO4J_WAIT=0
+while [ $NEO4J_WAIT -lt 60 ]; do
+    if python3 -c "
+from neomodel import db
+db.set_connection('${ANALYSIS_GRAPH_BOLT_URL}')
+db.cypher_query('RETURN 1')
+" 2>/dev/null; then
+        echo "Neo4j ready."
+        break
+    fi
+    sleep 5
+    NEO4J_WAIT=$((NEO4J_WAIT + 5))
+done
+if [ $NEO4J_WAIT -ge 60 ]; then
+    echo "WARNING: Neo4j not ready after 60s. Continuing without AG (degraded mode)."
+fi
+
+echo "=== Running AIJON instrumentation ==="
+echo "  Source: $TARGET_SOURCE"
+echo "  Report: $CODESWIPE_REPORT"
+echo "  Indices: $FULL_FUNCTION_INDICES"
+echo "  Functions JSON: $TARGET_FUNCTIONS_JSON_DIR"
+echo "  Output: $AIJON_ARTIFACTS"
+
+python /aijon/main.py \
+    --target_source "$TARGET_SOURCE" \
+    --target_functions_json_dir "$TARGET_FUNCTIONS_JSON_DIR" \
+    --full_function_indices "$FULL_FUNCTION_INDICES" \
+    --codeswipe_report "$CODESWIPE_REPORT" \
+    --destination "$AIJON_ARTIFACTS" \
+    --diff_only
+
+echo "=== AIJON instrumentation complete ==="
+echo "Artifacts:"
+ls -la "$AIJON_ARTIFACTS/"
+
+# Signal completion for aijon_fuzzer
+touch "$AIJON_ARTIFACTS/.done"
+echo "AIJON instrumentation done. Patch ready for aijon_fuzzer."

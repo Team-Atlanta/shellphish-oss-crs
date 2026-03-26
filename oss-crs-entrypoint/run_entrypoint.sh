@@ -59,11 +59,20 @@ case "$MODE" in
         echo "Mode: discoveryguy — skipping fuzzer core allocation (no fuzzers in this pipeline)"
         ;;
     aijon)
-        # AIJON uses AFL++/IJON only, no LibFuzzer.
-        # All cores go to AFL++.
-        AFLPP_CPUS="$ALL_CPUS"
+        # AIJON pipeline: AIJON fuzzer (half) + coverage tracer (1) + AFL++ (rest).
+        # Minimum 3 cores required.
+        if [ "$TOTAL" -lt 3 ]; then
+            echo "ERROR: AIJON pipeline requires at least 3 cores, got $TOTAL"
+            exit 1
+        fi
+        HALF=$((TOTAL / 2))
+        AIJON_CORES=("${CORES[@]:0:$HALF}")
+        AIJON_CPUS=$(join_cores "${AIJON_CORES[@]}")
+        # 1 core for coverage tracer, rest for AFL++
+        AFLPP_CORES=("${CORES[@]:$((HALF + 1))}")
+        AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
         LIBFUZZER_CPUS=""
-        echo "Mode: aijon — all cores to AFL++ ($TOTAL cores)"
+        echo "Mode: aijon — AIJON: ${AIJON_CPUS} (${#AIJON_CORES[@]} cores), coverage: ${CORES[$HALF]}, AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores)"
         ;;
     *)
         # Default: split evenly between AFL++ and LibFuzzer
@@ -85,6 +94,7 @@ ALLOC_TMP="${ALLOC_FILE}.tmp"
 cat > "$ALLOC_TMP" <<EOF
 AFLPP_CPUS=$AFLPP_CPUS
 LIBFUZZER_CPUS=$LIBFUZZER_CPUS
+AIJON_CPUS=${AIJON_CPUS:-}
 EOF
 mv "$ALLOC_TMP" "$ALLOC_FILE"
 
