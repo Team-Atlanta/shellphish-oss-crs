@@ -13,6 +13,7 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
         && python3.11 -m venv venv \
         && . venv/bin/activate \
         && python -m pip install -r requirements.txt \
-        && python -m pip install -e ../../../crs-utils
+        && python -m pip install -e ../../../crs-utils \
+        && python -m pip install "setuptools<78"
     popd
 )

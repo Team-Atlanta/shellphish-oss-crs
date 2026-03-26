@@ -8,3 +8,17 @@ pydantic==2.10.6
 # cause import errors if they're not included.
 aiohttp
 google-cloud-secret-manager
+# [OSS-CRS glue] Pin versions to avoid dependency drift with pip 22.0.2.
+# Original system was built ~mid-2025; without pins, pip resolves to latest versions
+# which break in multiple ways:
+#   - setuptools 78+ removes pkg_resources (used by google-cloud-storage)
+#   - cryptography 44+ changes cffi dependency markers that pip 22.0.2 can't resolve
+#   - google-cloud-storage 2.x changes namespace import behavior
+setuptools<78
+cryptography<44
+cffi>=1.12
+google-cloud-core>=1.7
+google-cloud-storage>=2
+# [OSS-CRS glue] Pin neomodel<6: version 6+ removed install_labels() which
+# analysis_graph/__init__.py imports. Shellphish's original build used 5.x.
+neomodel<6
