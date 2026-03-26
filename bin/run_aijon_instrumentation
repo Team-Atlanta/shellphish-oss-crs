@@ -172,4 +172,9 @@ ls -la "$AIJON_ARTIFACTS/"
 
 # Signal completion for aijon_fuzzer
 touch "$AIJON_ARTIFACTS/.done"
-echo "AIJON instrumentation done. Patch ready for aijon_fuzzer."
+echo "AIJON instrumentation done. Patch ready for aijon_builder."
+
+# Keep alive — OSS-CRS Compose shuts down all containers when any exits.
+# Shellphish's main.py retries on failure (stays alive), but on success it exits,
+# which would kill builder/fuzzer via --abort-on-container-exit.
+exec sleep infinity
