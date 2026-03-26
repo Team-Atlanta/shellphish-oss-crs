@@ -83,6 +83,14 @@ if [ -f "$SEMGREP_DIR/vulnerable_functions.json" ]; then
     ARGS+=(--semgrep-report-path "$SEMGREP_DIR/vulnerable_functions.json")
 fi
 
+# CodeQL CWE report (optional, from codeql-db build step)
+CODEQL_DIR="/tmp/codeql-input"
+libCRS download-build-output codeql-db "$CODEQL_DIR" 2>/dev/null || true
+if [ -f "$CODEQL_DIR/codeql-cwe-report.sarif" ]; then
+    ARGS+=(--codeql-cwe-report "$CODEQL_DIR/codeql-cwe-report.sarif")
+    echo "CodeQL CWE report found."
+fi
+
 # [OSS-CRS glue] Force local function resolver — no remote service in OSS-CRS.
 cd /shellphish/components/code-swipe
 sed -i 's/USE_REMOTE_FUNCTION_RESOLVER = True/USE_REMOTE_FUNCTION_RESOLVER = False/' \

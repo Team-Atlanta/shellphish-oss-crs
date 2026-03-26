@@ -14,5 +14,33 @@ mkdir -p "$CODEQL_OUT"
 [ -f /work/sss-codeql-database.zip ] && cp /work/sss-codeql-database.zip "$CODEQL_OUT/"
 [ -f /work/sss-codeql-database-no-build.zip ] && cp /work/sss-codeql-database-no-build.zip "$CODEQL_OUT/"
 
+# --- Run CWE queries to produce SARIF report (used by code-swipe) ---
+# Detect language for query suite selection
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    c|c++) QLANG="cpp" ;;
+    jvm|java) QLANG="java" ;;
+    *) QLANG="" ;;
+esac
+
+if [ -n "$QLANG" ] && [ -d /work/.sss-codeql-database ]; then
+    echo "=== Running CodeQL CWE analysis ($QLANG) ==="
+    ADDITIONAL_PACKS=""
+    if [ -d /compiled_packs ]; then
+        ADDITIONAL_PACKS="--additional-packs=$(find /compiled_packs -maxdepth 1 -type d | tail -n+2 | tr '\n' ':')"
+    fi
+
+    codeql database analyze \
+        --format=sarif-latest \
+        --output="$CODEQL_OUT/codeql-cwe-report.sarif" \
+        --threads=0 \
+        $ADDITIONAL_PACKS \
+        -- /work/.sss-codeql-database \
+        "codeql/${QLANG}-queries:codeql-suites/${QLANG}-security-experimental.qls" \
+        "codeql/${QLANG}-queries:codeql-suites/${QLANG}-security-extended.qls" \
+        2>&1 || echo "WARNING: CodeQL CWE analysis failed (non-fatal)"
+    echo "=== CodeQL CWE analysis complete ==="
+fi
+
 libCRS submit-build-output "$CODEQL_OUT" "${BUILD_OUTPUT_NAME:-codeql-db}"
 exit $RETCODE

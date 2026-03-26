@@ -17,6 +17,14 @@ target_build_phase:
       FUZZING_ENGINE: libfuzzer
       BUILD_OUTPUT_NAME: build-canonical
 
+  # CodeQL build (database + CWE report for code-swipe)
+  - name: codeql-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.builder
+    outputs:
+      - codeql-db
+    additional_env:
+      BUILD_OUTPUT_NAME: codeql-db
+
   # AFL++ build (for fuzzing + coverage data generation)
   - name: aflpp-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
