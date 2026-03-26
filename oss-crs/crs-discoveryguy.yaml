@@ -1,4 +1,4 @@
-name: crs-shellphish
+name: crs-shellphish-discoveryguy
 type:
   - bug-finding
 version: 1.0.0
@@ -62,12 +62,14 @@ target_build_phase:
 crs_run_phase:
   entrypoint:
     dockerfile: oss-crs-entrypoint/Dockerfile
+    additional_env:
+      CRS_PIPELINE_MODE: discoveryguy
   neo4j:
     dockerfile: neo4j/Dockerfile
   discoveryguy:
     dockerfile: shellphish-src/components/discoveryguy/Dockerfile
     additional_env:
-      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687"
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-discoveryguy:7687"
       DISCO_GUY_FROM: "POIS"
       DELTA_MODE: "False"
       LOCAL_RUN: "True"

@@ -1,9 +1,15 @@
 #!/bin/bash
 # OSS-CRS entrypoint module: computes CPU allocation for all run modules
 # and writes the result to SHARED_DIR for other containers to read.
+#
+# CRS_PIPELINE_MODE controls allocation strategy:
+#   fuzzers (default) — split cores evenly between AFL++ and LibFuzzer
+#   discoveryguy      — no fuzzer cores needed, all cores available for general use
+#   aijon             — all fuzzer cores go to AFL++ (AIJON uses AFL++/IJON only)
 set -euo pipefail
 
 ALLOC_FILE="/OSS_CRS_SHARED_DIR/cpu_allocation"
+MODE="${CRS_PIPELINE_MODE:-fuzzers}"
 
 # Read available cores from cgroup cpuset
 if [ -f /sys/fs/cgroup/cpuset.cpus.effective ]; then
@@ -36,20 +42,42 @@ parse_cpuset() {
 CORES=($(parse_cpuset "$CPUSET"))
 TOTAL=${#CORES[@]}
 
-# Split evenly between AFL++ and LibFuzzer
-HALF=$((TOTAL / 2))
-AFLPP_CORES=("${CORES[@]:0:$HALF}")
-LIBFUZZER_CORES=("${CORES[@]:$HALF}")
-
 # Format as comma-separated strings
 join_cores() { local IFS=','; echo "$*"; }
-AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
-LIBFUZZER_CPUS=$(join_cores "${LIBFUZZER_CORES[@]}")
+ALL_CPUS=$(join_cores "${CORES[@]}")
 
-echo "=== Entrypoint: CPU Allocation ==="
+echo "=== Entrypoint: CPU Allocation (mode=$MODE) ==="
 echo "Available cores: $CPUSET ($TOTAL total)"
-echo "AFL++:     $AFLPP_CPUS (${#AFLPP_CORES[@]} cores)"
-echo "LibFuzzer: $LIBFUZZER_CPUS (${#LIBFUZZER_CORES[@]} cores)"
+
+case "$MODE" in
+    discoveryguy)
+        # DiscoveryGuy is LLM-driven, does not run fuzzers — no core pinning needed.
+        # Write a valid allocation file so other containers that wait for it don't hang,
+        # but the values are unused. DiscoveryGuy runs on all available cores unbound.
+        AFLPP_CPUS=""
+        LIBFUZZER_CPUS=""
+        echo "Mode: discoveryguy — skipping fuzzer core allocation (no fuzzers in this pipeline)"
+        ;;
+    aijon)
+        # AIJON uses AFL++/IJON only, no LibFuzzer.
+        # All cores go to AFL++.
+        AFLPP_CPUS="$ALL_CPUS"
+        LIBFUZZER_CPUS=""
+        echo "Mode: aijon — all cores to AFL++ ($TOTAL cores)"
+        ;;
+    *)
+        # Default: split evenly between AFL++ and LibFuzzer
+        HALF=$((TOTAL / 2))
+        AFLPP_CORES=("${CORES[@]:0:$HALF}")
+        LIBFUZZER_CORES=("${CORES[@]:$HALF}")
+        AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
+        LIBFUZZER_CPUS=$(join_cores "${LIBFUZZER_CORES[@]}")
+        echo "Mode: fuzzers — AFL++: ${#AFLPP_CORES[@]} cores, LibFuzzer: ${#LIBFUZZER_CORES[@]} cores"
+        ;;
+esac
+
+echo "AFLPP_CPUS=$AFLPP_CPUS"
+echo "LIBFUZZER_CPUS=$LIBFUZZER_CPUS"
 echo "==================================="
 
 # Write allocation file atomically: write to temp, then mv (atomic on same filesystem)
@@ -61,3 +89,6 @@ EOF
 mv "$ALLOC_TMP" "$ALLOC_FILE"
 
 echo "Allocation written to $ALLOC_FILE"
+
+# Keep alive — OSS-CRS Compose shuts down all containers when any exits
+exec sleep infinity
