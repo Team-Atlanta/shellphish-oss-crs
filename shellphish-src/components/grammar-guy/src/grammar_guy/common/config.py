@@ -15,6 +15,8 @@ from shellphish_crs_utils.models.indexer import FunctionIndex
 from shellphish_crs_utils.oss_fuzz.project import InstrumentedOssFuzzProject
 from shellphish_crs_utils.oss_fuzz.instrumentation.coverage_fast import CoverageFastInstrumentation
 from shellphish_crs_utils.function_resolver import RemoteFunctionResolver
+if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+    from shellphish_crs_utils.function_resolver import LocalFunctionResolver
 from shellphish_crs_utils.models.coverage import FunctionCoverageMap
 
 from shellphish_crs_utils import sarif_resolver
@@ -179,7 +181,10 @@ def parse_config_from_args():
     # with open(str(harness_info_path()), 'r') as f:
     #     HARNESS_INFO = HarnessInfo.model_validate(yaml.safe_load(f))
         
-    FUNCTION_RESOLVER = RemoteFunctionResolver(PROJECT_HARNESS_METADATA['project_name'], PROJECT_HARNESS_METADATA['project_id'])
+    if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+        FUNCTION_RESOLVER = LocalFunctionResolver(os.environ['OSSCRS_FUNC_INDEX_PATH'], os.environ['OSSCRS_FUNC_JSONS_PATH'])
+    else:
+        FUNCTION_RESOLVER = RemoteFunctionResolver(PROJECT_HARNESS_METADATA['project_name'], PROJECT_HARNESS_METADATA['project_id'])
 
 
     if SARIF_PATH and SARIF_PATH != '':
@@ -263,8 +268,9 @@ def set_target_project(path):
 
     TARGET_PROJECT = InstrumentedOssFuzzProject(CoverageFastInstrumentation(), path, augmented_metadata=PROJECT_METADATA)
     # mostly for debugging now, we rebuild the images to make sure they exist. In the pipeline they *should* be cached
-    TARGET_PROJECT.build_builder_image()
-    TARGET_PROJECT.build_runner_image()
+    if not os.environ.get("OSSCRS_INTEGRATION_MODE"):
+        TARGET_PROJECT.build_builder_image()
+        TARGET_PROJECT.build_runner_image()
 
     os.makedirs(TARGET_PROJECT.artifacts_dir_work / 'grammar', exist_ok=True)
 
@@ -450,7 +456,10 @@ def set_directories():
         # afl_sync_path = pathlib.Path(f"/shared/fuzzer_sync/{task_name}-{job_id}-{project_name}-{replica_id}/sync-grammar-guy/queue")
         # fuzzer_sync_dir = pathlib.Path(f"/shared/fuzzer_sync/{task_name}-{job_id}-{project_name}/sync-grammar-guy-{replica_id}")
         
-        fuzzer_sync_dir = pathlib.Path(f"/shared/fuzzer_sync/{project_name}-{cp_harness_name}-{harness_info_id}/sync-{task_name.replace('_', '-')}-{replica_id}")
+        _shared = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        # In OSSCRS, AFL++ glue uses "0" as harness_info_id suffix; original uses hash
+        _hid = "0" if os.environ.get("OSSCRS_INTEGRATION_MODE") else harness_info_id
+        fuzzer_sync_dir = pathlib.Path(f"{_shared}/fuzzer_sync/{project_name}-{cp_harness_name}-{_hid}/sync-{task_name.replace('_', '-')}-{replica_id}")
         
         # Create directories if they don't exist
         os.makedirs(fuzzer_sync_dir / 'queue', exist_ok=True) # create the queue too while we're at it

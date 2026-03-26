@@ -10,7 +10,27 @@ RUN python3 -m pip install --upgrade pip
 RUN pip3 install -e /shellphish/libs/crs-utils
 RUN pip3 install tiktoken lxml commentjson
 
-COPY . /shellphish/grammaroomba/
+# OSS-CRS: adapt COPY path (build context is shellphish-oss-crs/)
+COPY shellphish-src/components/grammaroomba /shellphish/grammaroomba/
 
 RUN cd /shellphish/grammaroomba/ && pip3 install -e .
 RUN cd /shellphish/libs/nautilus/ && ./build.sh
+
+# [OSS-CRS glue] Map model names to external litellm-compatible names
+RUN find /shellphish -name "*.py" -exec sed -i \
+    -e 's/claude-4-sonnet/claude-sonnet-4-6/g' \
+    -e 's/claude-4-opus/claude-opus-4-6/g' \
+    -e 's/claude-3\.7-sonnet/claude-sonnet-4-6/g' \
+    -e 's/claude-3\.5-sonnet/claude-3-5-sonnet-20241022/g' \
+    -e 's/gpt-o4-mini/o4-mini/g' \
+    -e 's/gpt-o3-mini/o3-mini/g' \
+    -e 's/gpt-o3/o3/g' \
+    -e 's/oai-//g' \
+    {} + 2>/dev/null || true
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_grammaroomba /usr/local/bin/run_grammaroomba
+RUN chmod +x /usr/local/bin/run_grammaroomba
+CMD ["run_grammaroomba"]

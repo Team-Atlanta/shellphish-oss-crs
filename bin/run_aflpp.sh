@@ -29,14 +29,29 @@ cd "$OUT"
 POV_DIR="/tmp/povs"
 mkdir -p "$POV_DIR"
 
+# Fuzzer sync dir in SHARED_DIR so other run modules can access it
+# (Grammar-Composer, GrammarRoomba etc. read/write grammars and seeds here)
+SYNC_BASE="/OSS_CRS_SHARED_DIR/fuzzer_sync"
+SYNC_DIR="${SYNC_BASE}/${OSS_CRS_TARGET}-${HARNESS}-0"
+mkdir -p "$SYNC_DIR"
+
+# Seed input dir: other CRS's seeds fetched here, AFL++ reads via -F
+SEED_FETCH_DIR="/tmp/seeds_from_other_crs"
+mkdir -p "$SEED_FETCH_DIR"
+
 # --- Register PoV submission (background watchdog) ---
 libCRS register-submit-dir pov "$POV_DIR" &
+
+# --- Seed sharing ---
+# Fetch seeds from other CRS
+libCRS register-fetch-dir seed "$SEED_FETCH_DIR" &
+# Seed submission done via direct libCRS submit in collect loop below
 
 # --- Common env vars for Shellphish's run_fuzzer ---
 export ARTIPHISHELL_PROJECT_NAME="${OSS_CRS_TARGET:-unknown}"
 export ARTIPHISHELL_HARNESS_NAME="$HARNESS"
 export ARTIPHISHELL_HARNESS_INFO_ID="0"
-export ARTIPHISHELL_FUZZER_SYNC_DIR="/tmp/afl_sync"
+export ARTIPHISHELL_FUZZER_SYNC_DIR="$SYNC_DIR"
 export ARTIPHISHELL_INTER_HARNESS_SYNC_DIR="/tmp/foreign_fuzzer"
 export ARTIPHISHELL_AFL_EXTRA_ARGS=""
 export ARTIPHISHELL_AFL_TIMEOUT=""
@@ -74,8 +89,9 @@ for i in "${!CORES[@]}"; do
     PIDS="$PIDS $!"
 done
 
-# --- Crash monitor: collect crashes from ALL instances ---
-collect_crashes() {
+# --- Crash + seed monitor ---
+collect_crashes_and_seeds() {
+    # Collect crashes from ALL instances
     for instance_dir in "$ARTIPHISHELL_FUZZER_SYNC_DIR"/*/crashes; do
         [ -d "$instance_dir" ] || continue
         for crash in "$instance_dir"/id:*; do
@@ -83,6 +99,26 @@ collect_crashes() {
             bn=$(basename "$crash")
             [ -f "$POV_DIR/$bn" ] || cp "$crash" "$POV_DIR/$bn" 2>/dev/null || true
         done
+    done
+    # Submit seeds from main instance queue to other CRS
+    MAIN_QUEUE="$ARTIPHISHELL_FUZZER_SYNC_DIR/main/queue"
+    if [ -d "$MAIN_QUEUE" ]; then
+        for seed in "$MAIN_QUEUE"/id:*; do
+            [ -f "$seed" ] || continue
+            bn=$(basename "$seed")
+            # Track submitted seeds to avoid duplicates
+            [ -f "/tmp/.seeds_submitted/$bn" ] && continue
+            libCRS submit seed "$seed" 2>/dev/null || true
+            mkdir -p /tmp/.seeds_submitted
+            touch "/tmp/.seeds_submitted/$bn"
+        done
+    fi
+    # Import fetched seeds from other CRS into AFL++ foreign sync
+    for seed in "$SEED_FETCH_DIR"/*; do
+        [ -f "$seed" ] || continue
+        bn=$(basename "$seed")
+        mkdir -p "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR/queue"
+        [ -f "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR/queue/$bn" ] || cp "$seed" "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR/queue/$bn" 2>/dev/null || true
     done
 }
 
@@ -93,12 +129,12 @@ while true; do
         kill -0 "$pid" 2>/dev/null && ALIVE=true
     done
     $ALIVE || break
-    collect_crashes
+    collect_crashes_and_seeds
     sleep 5
 done
 
 # Final sweep
-collect_crashes
+collect_crashes_and_seeds
 
 wait || true
 echo "AFL++ fuzzer(s) exited."

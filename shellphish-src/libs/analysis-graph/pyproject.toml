@@ -16,7 +16,7 @@ dependencies = [
     "defusedxml",
     "gitpython",
     "jinja2",
-    "neomodel",
+    "neomodel<6",
     "pyunionfind",
     "networkx",
 ]

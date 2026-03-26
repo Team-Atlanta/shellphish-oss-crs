@@ -17,11 +17,14 @@ from shellphish_crs_utils.models.target import HarnessInfo
 from crs_telemetry.utils import init_otel, get_otel_tracer, status_ok, init_llm_otel
 from grammaroomba.globals import GLOBALS
 from grammaroomba.ranker import *  # noqa: F401,F403 - keep behaviour
-from grammaroomba.functions import FunctionMetaStack  # noqa: F401 - future use
+# [OSS-CRS glue] Commented out: unused import, pulls in analysis_graph → neomodel
+# which has version incompatibility (install_labels removed in newer neomodel)
+# from grammaroomba.functions import FunctionMetaStack  # noqa: F401 - future use
 from grammaroomba.roomba import Grammaroomba
 
-init_otel("grammar-guy-agentic-explorer", "input-generation", "llm_grammar_generation")
-init_llm_otel()
+if not os.environ.get("OSSCRS_INTEGRATION_MODE"):
+    init_otel("grammar-guy-agentic-explorer", "input-generation", "llm_grammar_generation")
+    init_llm_otel()
 tracer = get_otel_tracer()
 log = logging.getLogger("grammaroomba.run")
 
@@ -37,7 +40,9 @@ def set_directories(harness_info_dict: dict[str, HarnessInfo]):
     for harness_info_id, harness_info in harness_info_dict.items():
         project_name = harness_info.project_name
         cp_harness_name = harness_info.cp_harness_name
-        fuzzer_sync_dir = Path(f"/shared/fuzzer_sync/{project_name}-{cp_harness_name}-{harness_info_id}/sync-{task_name.replace('_', '-')}-{replica_id}")
+        _shared = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        _hid = "0" if os.environ.get("OSSCRS_INTEGRATION_MODE") else harness_info_id
+        fuzzer_sync_dir = Path(f"{_shared}/fuzzer_sync/{project_name}-{cp_harness_name}-{_hid}/sync-{task_name.replace('_', '-')}-{replica_id}")
         # Create directories if they don't exist
         os.makedirs(fuzzer_sync_dir, exist_ok=True)
 
@@ -94,8 +99,16 @@ def setup() -> bool:
             LanguageEnum.cpp: C_LineCoverageParser_LLVMCovHTML,
             LanguageEnum.jvm: Java_LineCoverageParser_Jacoco,
         }[GLOBALS.target.project_metadata.language]()
-        GLOBALS.function_resolver = RemoteFunctionResolver(cp_name=GLOBALS.project_harness_metadata["project_name"], project_id=GLOBALS.project_harness_metadata["project_id"])
-        if not GLOBALS.permanence_client and GLOBALS.function_resolver:
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            # [OSS-CRS glue] Use local function index files instead of remote HTTP service
+            from shellphish_crs_utils.function_resolver import LocalFunctionResolver
+            GLOBALS.function_resolver = LocalFunctionResolver(
+                functions_index_path=os.environ["OSSCRS_FUNC_INDEX_PATH"],
+                functions_jsons_path=os.environ["OSSCRS_FUNC_JSONS_PATH"],
+            )
+        else:
+            GLOBALS.function_resolver = RemoteFunctionResolver(cp_name=GLOBALS.project_harness_metadata["project_name"], project_id=GLOBALS.project_harness_metadata["project_id"])
+        if not os.environ.get("OSSCRS_INTEGRATION_MODE") and not GLOBALS.permanence_client and GLOBALS.function_resolver:
             GLOBALS.permanence_client = PermanenceClient(function_resolver=GLOBALS.function_resolver)
 
         # harness key
@@ -130,7 +143,8 @@ def setup() -> bool:
 def run_roomba():
     with Tracer(GLOBALS.target_shared_dir, GLOBALS.project_harness_metadata["cp_harness_name"], aggregate=True, parser=GLOBALS.parser) as tracer:
         GLOBALS.tracer = tracer
-        tracer.instr_project.build_runner_image()
+        if not os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            tracer.instr_project.build_runner_image()
         GLOBALS.harness_source_code = GLOBALS.function_resolver.get(GLOBALS.harness_function_index_key).code
         log.info("running roomba")
         assert Grammaroomba(tracer).run() is None

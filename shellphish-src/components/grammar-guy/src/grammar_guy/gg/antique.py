@@ -30,8 +30,9 @@ from grammar_guy.common.agents.grammar_agent_incremental import apply_grammar_ch
 
 # -------------------------- end of imports --------------------------
 
-init_otel("grammar-guy", "input-generation", "llm_grammar_generation")
-init_llm_otel()
+if not os.environ.get("OSSCRS_INTEGRATION_MODE"):
+    init_otel("grammar-guy", "input-generation", "llm_grammar_generation")
+    init_llm_otel()
 tracer = get_otel_tracer()
 
 # SET LOGGING LEVEL

@@ -1,0 +1,100 @@
+#!/bin/bash
+# OSS-CRS glue: GrammarRoomba run module.
+# Downloads build outputs, constructs metadata, launches roomba.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+INSTANCE_ID="roomba"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+echo "=== GrammarRoomba starting: harness=$HARNESS ==="
+
+# --- Download build outputs ---
+# Coverage build (for Tracer)
+COV_TARGET="${SHARED}/coverage-build-${INSTANCE_ID}"
+mkdir -p "$COV_TARGET"
+libCRS download-build-output build-coverage "$COV_TARGET"
+
+# Function index (for LocalFunctionResolver)
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+# Clang index (contains FUNCTION/*.json files that LocalFunctionResolver reads)
+CLANG_INDEX_DIR="/tmp/clang-index"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+# Augmented metadata
+AUG_DIR="/tmp/augmented-metadata"
+mkdir -p "$AUG_DIR"
+libCRS download-build-output augmented-metadata "$AUG_DIR"
+
+# Split metadata
+SPLIT_DIR="/tmp/split-metadata"
+mkdir -p "$SPLIT_DIR"
+libCRS download-build-output split-metadata "$SPLIT_DIR"
+
+# --- Find the project-harness-metadata-id for our harness ---
+# split_metadata has project_harness_metadatas dict, find the key where cp_harness_name matches
+PHM_ID=$(python3 -c "
+import json, sys
+with open('$SPLIT_DIR/target_split_metadata.json') as f:
+    meta = json.load(f)
+for k, v in meta.get('project_harness_metadatas', {}).items():
+    if v.get('cp_harness_name') == '$HARNESS':
+        print(k)
+        sys.exit(0)
+print('ERROR: harness $HARNESS not found in split metadata', file=sys.stderr)
+sys.exit(1)
+")
+echo "Found project_harness_metadata_id: $PHM_ID"
+
+# --- Set up covlib workdir (must match tracer's workdir) ---
+COVLIB_WORKDIR="$COV_TARGET/artifacts/work/covlib"
+mkdir -p "$COVLIB_WORKDIR"
+
+# --- Environment for OSSCRS integration mode ---
+export OSSCRS_INTEGRATION_MODE=1
+export OSSCRS_COVLIB_WORKDIR="$COVLIB_WORKDIR"
+
+# LocalFunctionResolver paths (used by modified run.py)
+export OSSCRS_FUNC_INDEX_PATH="$FUNC_INDEX_DIR/indices.json"
+export OSSCRS_FUNC_JSONS_PATH="$CLANG_INDEX_DIR/full"
+
+# LLM configuration
+# OSS-CRS passes OSS_CRS_LLM_API_URL and OSS_CRS_LLM_API_KEY to containers
+export USE_LLM_API="${USE_LLM_API:-true}"
+export AIXCC_LITELLM_HOSTNAME="${OSS_CRS_LLM_API_URL:-${AIXCC_LITELLM_HOSTNAME:-http://litellm.crs-shellphish:4000}}"
+export LITELLM_KEY="${OSS_CRS_LLM_API_KEY:-${LITELLM_KEY:-}}"
+# agentlib uses ChatOpenAI which requires OPENAI_API_KEY/OPENAI_API_BASE
+export OPENAI_API_KEY="${LITELLM_KEY}"
+export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
+
+# Telemetry: disable OpenTelemetry to avoid gRPC connection blocking
+# (init_otel/init_llm_otel in run.py try to connect to localhost:4317 which hangs)
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4317}"
+
+echo "Coverage target: $COV_TARGET"
+echo "Func index: $FUNC_INDEX_DIR"
+echo "Covlib workdir: $COVLIB_WORKDIR"
+
+# --- Wait for Grammar-Guy to populate Neo4j with initial grammar ---
+# Roomba refines existing grammars; Grammar-Guy creates them.
+# Wait briefly so Neo4j has grammar data when Roomba first queries it.
+ROOMBA_STARTUP_DELAY="${ROOMBA_STARTUP_DELAY:-180}"
+echo "Waiting ${ROOMBA_STARTUP_DELAY}s for Grammar-Guy to populate Neo4j..."
+sleep "$ROOMBA_STARTUP_DELAY"
+
+# --- Launch GrammarRoomba ---
+echo "=== Launching run.py ==="
+# Redirect Python output to LOG_DIR for visibility (Compose log capture misses Python stdout)
+LOGFILE="${OSS_CRS_LOG_DIR:-/tmp}/grammaroomba_run.log"
+python -u /shellphish/grammaroomba/src/grammaroomba/run.py \
+    --target-shared-dir "$COV_TARGET" \
+    --target-split-metadata "$SPLIT_DIR/target_split_metadata.json" \
+    --project-harness-metadata-id "$PHM_ID" \
+    --project-harness-metadata "$AUG_DIR/augmented_metadata.json" \
+    --project-metadata "$AUG_DIR/augmented_metadata.json" \
+    --events-dir "/tmp/roomba-events" \
+    2>&1 | tee "$LOGFILE"

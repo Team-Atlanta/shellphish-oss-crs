@@ -1,0 +1,118 @@
+#!/bin/bash
+# OSS-CRS glue: Coverage tracer run module.
+# Downloads coverage build, sets up workdir, feeds seeds from AFL++ sync dir
+# to oss-fuzz-coverage_live, and (for AIJON mode) uploads coverage to Neo4j AG.
+set -eu
+
+INSTANCE_ID="${TRACER_INSTANCE_ID:-default}"
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+TARGET="${OSS_CRS_TARGET:-unknown}"
+
+echo "Coverage tracer starting: instance=$INSTANCE_ID harness=$HARNESS"
+
+# --- Download coverage build to shared dir ---
+COV_TARGET="${SHARED}/coverage-build-${INSTANCE_ID}"
+mkdir -p "$COV_TARGET"
+libCRS download-build-output build-coverage "$COV_TARGET"
+
+# Set up the directory layout that oss-fuzz-coverage_live expects:
+# /out/ must contain the instrumented harness binaries
+# /corpus/<harness>/ is the corpus directory
+export OUT="$COV_TARGET/artifacts/out"
+export PATH="$OUT:$PATH"
+
+# --- Set up fixed covlib workdir (shared with Roomba/Guy via OSSCRS_COVLIB_WORKDIR) ---
+COVLIB_WORKDIR="$COV_TARGET/artifacts/work/covlib"
+mkdir -p "$COVLIB_WORKDIR/seeds-queue"
+mkdir -p "$COVLIB_WORKDIR/corpus/$HARNESS"
+mkdir -p "$COVLIB_WORKDIR/raw-results"
+mkdir -p "$COVLIB_WORKDIR/raw-results-done-files"
+# oss-fuzz-coverage_live uses hardcoded /corpus/$HARNESS and /out paths
+mkdir -p "/corpus/$HARNESS"
+# oss-fuzz-coverage_live and llvm-cov both use hardcoded /out/ paths.
+# Our OUT is at $COV_TARGET/artifacts/out, so symlink /out → $OUT.
+rm -rf /out 2>/dev/null || true
+ln -sfn "$OUT" /out
+
+# Env vars that oss-fuzz-coverage_live reads
+export FOLDER_TO_MONITOR="$COVLIB_WORKDIR/seeds-queue"
+export COVLIB_RESULTS="$COVLIB_WORKDIR/raw-results"
+export COVLIB_DONE_FILES="$COVLIB_WORKDIR/raw-results-done-files"
+export ASAN_OPTIONS="detect_leaks=0"
+export TIMEOUT_PER_SEED="${TIMEOUT_PER_SEED:-100}"
+export COVERAGE_AGGREGATE="${COVERAGE_AGGREGATE:-true}"
+
+# SHELLPHISH_PARSING_COMMAND: normally set by trace.py's Tracer to post-process
+# the raw profdata. Grammar-Guy uses C_LineCoverageParser_LLVMCovHTML which
+# expects HTML output from llvm-cov show. The --path-equivalence maps container
+# paths to the coverage build artifact paths so llvm-cov can find source files.
+export SHELLPHISH_PARSING_COMMAND="llvm-cov show /out/${HARNESS} -format=html -instr-profile=/out/dumps/merged.profdata --path-equivalence=\"/,${COV_TARGET}/artifacts/out\" > /out/dumps/merged.profdata.processed"
+
+# oss-fuzz env vars expected by the coverage scripts
+export FUZZING_ENGINE="libfuzzer"
+export SANITIZER="coverage"
+export FUZZING_LANGUAGE="${FUZZING_LANGUAGE:-c}"
+
+echo "Tracer workdir: $COVLIB_WORKDIR"
+echo "Monitoring: $FOLDER_TO_MONITOR"
+echo "Results at: $COVLIB_RESULTS"
+
+# --- Seed feeder: copy seeds from AFL++ sync dir to seeds-queue ---
+# In the Shellphish CRS, coveragelib's Tracer (Python) is called by
+# Grammar-Guy/coverage-guy which feeds seeds. In OSS-CRS standalone mode,
+# we need a background loop to feed seeds from the AFL++ fuzzer sync dir.
+SYNC_DIR="${SHARED}/fuzzer_sync"
+SEEDS_QUEUE="$COVLIB_WORKDIR/seeds-queue"
+SEEN_SEEDS_FILE="/tmp/coverage_tracer_seen_seeds"
+touch "$SEEN_SEEDS_FILE"
+
+feed_seeds() {
+    echo "Seed feeder: waiting for AFL++ sync dir at $SYNC_DIR..."
+    while [ ! -d "$SYNC_DIR" ]; do
+        sleep 5
+    done
+
+    # Find the AFL++ instance dir (e.g., sanity-mock-c-delta-01-fuzz_parse_buffer_section-0/main)
+    AFLPP_DIR=""
+    while [ -z "$AFLPP_DIR" ]; do
+        AFLPP_DIR=$(find "$SYNC_DIR" -name "main" -type d 2>/dev/null | head -1)
+        if [ -z "$AFLPP_DIR" ]; then
+            sleep 5
+        fi
+    done
+    AFLPP_QUEUE="$AFLPP_DIR/queue"
+    echo "Seed feeder: found AFL++ queue at $AFLPP_QUEUE"
+
+    BATCH_INTERVAL="${SEED_FEED_INTERVAL:-30}"
+    echo "Seed feeder: feeding seeds every ${BATCH_INTERVAL}s"
+
+    while true; do
+        sleep "$BATCH_INTERVAL"
+
+        # Collect new seeds not yet seen
+        NEW_COUNT=0
+        for seed in "$AFLPP_QUEUE"/id:*; do
+            [ -f "$seed" ] || continue
+            SEED_NAME=$(basename "$seed")
+            if ! grep -qF "$SEED_NAME" "$SEEN_SEEDS_FILE" 2>/dev/null; then
+                cp "$seed" "$SEEDS_QUEUE/seed-${SEED_NAME}"
+                echo "$SEED_NAME" >> "$SEEN_SEEDS_FILE"
+                NEW_COUNT=$((NEW_COUNT + 1))
+            fi
+        done
+
+        if [ "$NEW_COUNT" -gt 0 ]; then
+            echo "Seed feeder: copied $NEW_COUNT new seeds to queue, writing .covlib.done"
+            echo "done" > "$SEEDS_QUEUE/.covlib.done"
+        fi
+    done
+}
+
+# Start seed feeder in background
+feed_seeds &
+FEEDER_PID=$!
+echo "Seed feeder started (PID=$FEEDER_PID)"
+
+# --- Run oss-fuzz-coverage_live (blocks forever, processing seeds) ---
+exec oss-fuzz-coverage_live "$HARNESS"

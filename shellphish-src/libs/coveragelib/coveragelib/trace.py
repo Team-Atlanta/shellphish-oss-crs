@@ -168,8 +168,10 @@ class Tracer:
         ########################
         # SANITIY CHECKS 🩺
         ########################
-        # The target dir MUST be in /shared/
-        assert str(self.target_dir).startswith("/shared/")
+        # The target dir MUST be in the shared volume
+        _shared_prefix = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        assert str(self.target_dir).startswith(_shared_prefix), \
+            f"target_dir {self.target_dir} must be under shared dir {_shared_prefix}"
         # To make sure the user is giving us an oss-fuzz-dir
         # we are gonna assert that the folder "artifacts"
         self.artifacts_path = os.path.join(self.target_dir, "artifacts")
@@ -267,7 +269,13 @@ class Tracer:
         self.buddy_tracer: RunImageInBackgroundResult = None
 
     def __create_covlib_workdir(self):
-        self.covlib_workdir = f'{self.target_dir}/artifacts/work/coveragelib-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        external_workdir = os.environ.get("OSSCRS_COVLIB_WORKDIR")
+        if external_workdir:
+            # [OSS-CRS glue] In integration mode the workdir is fixed so the
+            # external tracer run-module and the consumer share the same path.
+            self.covlib_workdir = external_workdir
+        else:
+            self.covlib_workdir = f'{self.target_dir}/artifacts/work/coveragelib-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
         print(f'Covlib workdir: {self.covlib_workdir}')
         self.covlib_queue_folder_at = f'{self.covlib_workdir}/seeds-queue'
         self.coverage_harnesses_corpuses_at = self.covlib_workdir  + '/corpus/'
@@ -278,10 +286,11 @@ class Tracer:
         # The queue_backup_folder will hold a copy of the covlib_queue_folder_at (in case we fail we want to base64 those)
         # This is safe because we don't know where the seeds will be located 
         #   e.g., if they are in /tmp, they might be removed before we are able to base64 them!
-        self.queue_backup_folder = f"/shared/covlib-trace-seeds-backup/queue-backup-{''.join(random.choices(string.ascii_lowercase + string.digits, k=12))}"
+        _shared = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        self.queue_backup_folder = f"{_shared}/covlib-trace-seeds-backup/queue-backup-{''.join(random.choices(string.ascii_lowercase + string.digits, k=12))}"
 
-        if not str(self.covlib_workdir).startswith("/shared/"):
-            raise Exception(f"Covlib workdir {self.covlib_workdir} must be in /shared/. Most likely you target dir {self.target_dir} is wrong!")
+        if not str(self.covlib_workdir).startswith(_shared):
+            raise Exception(f"Covlib workdir {self.covlib_workdir} must be in {_shared}. Most likely you target dir {self.target_dir} is wrong!")
 
         os.makedirs(self.covlib_workdir, exist_ok=True)
         os.makedirs(self.covlib_queue_folder_at, exist_ok=True)
@@ -289,13 +298,19 @@ class Tracer:
         os.makedirs(self.coverage_harness_corpus_at, exist_ok=True)
         os.makedirs(self.covlib_results_at, exist_ok=True)
         os.makedirs(self.covlib_done_files_at, exist_ok=True)
-        os.makedirs("/shared/covlib-trace-seeds-backup", exist_ok=True)
+        os.makedirs(f"{_shared}/covlib-trace-seeds-backup", exist_ok=True)
         os.makedirs(self.queue_backup_folder, exist_ok=True)
 
         self.default_raw_coverage_file = self.covlib_done_files_at + "{seed_name}"
 
 
     def __start_background_tracer(self):
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            # [OSS-CRS glue] The buddy tracer runs as an independent run-module;
+            # nothing to start here.
+            self.buddy_tracer_is_running = True
+            return
+
         extra_docker_args = ["-e", "FOLDER_TO_MONITOR=" + self.covlib_queue_folder_at]
         extra_docker_args.extend(["-e", "COVLIB_RESULTS=" + self.covlib_results_at])
         extra_docker_args.extend(["-e", "COVLIB_DONE_FILES=" + self.covlib_done_files_at])
@@ -338,6 +353,11 @@ class Tracer:
     def __exit__(self, exc_type, exc_value, traceback):
         # This is executed ALWAYS whenever the Tracer object goes out of scope
         # This is safe in case of exceptions/asserts/etc....
+
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            # [OSS-CRS glue] External tracer lifecycle is managed by OSS-CRS,
+            # not by this process.
+            return
 
         # First, we need to kill the buddy tracer container
         try:
@@ -407,6 +427,11 @@ class Tracer:
         return
 
     def __ensure_tracer_is_alive(self):
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            # [OSS-CRS glue] Cannot docker-inspect an external container.
+            # The external tracer is managed by OSS-CRS; assume it is alive.
+            return
+
         assert self.buddy_tracer
 
         # Check if the container is still running
@@ -500,9 +525,13 @@ class Tracer:
 
     def restart(self):
         # If the buddy tracer is alive, let's kill it
-        if self.buddy_tracer:
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            # [OSS-CRS glue] Cannot kill/rm external container; skip Docker
+            # operations but still clean up local state below.
+            pass
+        elif self.buddy_tracer:
             container_state = subprocess.check_output(["docker", "inspect", "--format={{.State.Running}}", self.buddy_tracer.container_id])
-            
+
             if b"true\n" in container_state:
                 assert self.buddy_tracer_is_running
                 # WARNING: This is killing a running tracer...

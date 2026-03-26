@@ -1,0 +1,98 @@
+#!/bin/bash
+# OSS-CRS glue: Grammar-Guy run module.
+# Downloads build outputs, constructs metadata, launches grammar-guy (antique.py).
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+INSTANCE_ID="gg"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+echo "=== Grammar-Guy starting: harness=$HARNESS ==="
+
+# --- Download build outputs ---
+COV_TARGET="${SHARED}/coverage-build-${INSTANCE_ID}"
+mkdir -p "$COV_TARGET"
+libCRS download-build-output build-coverage "$COV_TARGET"
+
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+CLANG_INDEX_DIR="/tmp/clang-index"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+AUG_DIR="/tmp/augmented-metadata"
+mkdir -p "$AUG_DIR"
+libCRS download-build-output augmented-metadata "$AUG_DIR"
+
+SPLIT_DIR="/tmp/split-metadata"
+mkdir -p "$SPLIT_DIR"
+libCRS download-build-output split-metadata "$SPLIT_DIR"
+
+# --- Find the project-harness-metadata-id for our harness ---
+PHM_ID=$(python3 -c "
+import json, sys
+with open('$SPLIT_DIR/target_split_metadata.json') as f:
+    meta = json.load(f)
+for k, v in meta.get('project_harness_metadatas', {}).items():
+    if v.get('cp_harness_name') == '$HARNESS':
+        print(k)
+        sys.exit(0)
+print('ERROR: harness $HARNESS not found in split metadata', file=sys.stderr)
+sys.exit(1)
+")
+echo "Found project_harness_metadata_id: $PHM_ID"
+
+# --- Set up covlib workdir ---
+# Must match coverage_tracer_guy's workdir so the buddy tracer picks up seeds
+# coverage_tracer_guy uses TRACER_INSTANCE_ID=guy → $SHARED/coverage-build-guy
+COVLIB_WORKDIR="${SHARED}/coverage-build-guy/artifacts/work/covlib"
+mkdir -p "$COVLIB_WORKDIR"
+# Remove stale lock
+rm -f "$COV_TARGET/artifacts/out/.covlib_tracer_locked"
+
+# --- Environment for OSSCRS integration mode ---
+export OSSCRS_INTEGRATION_MODE=1
+export OSSCRS_COVLIB_WORKDIR="$COVLIB_WORKDIR"
+export OSSCRS_FUNC_INDEX_PATH="$FUNC_INDEX_DIR/indices.json"
+export OSSCRS_FUNC_JSONS_PATH="$CLANG_INDEX_DIR/full"
+
+# LLM configuration
+export AIXCC_LITELLM_HOSTNAME="${OSS_CRS_LLM_API_URL:-${AIXCC_LITELLM_HOSTNAME:-http://litellm.crs-shellphish:4000}}"
+export LITELLM_KEY="${OSS_CRS_LLM_API_KEY:-${LITELLM_KEY:-}}"
+# agentlib uses ChatOpenAI which requires OPENAI_API_KEY/OPENAI_API_BASE
+export OPENAI_API_KEY="${LITELLM_KEY}"
+export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
+
+# Telemetry: disable to avoid gRPC blocking
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+
+# Neo4j: set by crs.yaml additional_env, provide default
+export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687}"
+
+# Grammar-Guy specific env vars expected by set_directories()
+export TASK_NAME="${TASK_NAME:-grammar_guy_fuzz}"
+export JOB_ID="${JOB_ID:-osscrs}"
+export REPLICA_ID="${REPLICA_ID:-0}"
+export PROJECT_NAME="${OSS_CRS_TARGET_PROJECT:-unknown}"
+
+echo "Coverage target: $COV_TARGET"
+echo "Func index: $FUNC_INDEX_DIR"
+echo "Covlib workdir: $COVLIB_WORKDIR"
+echo "Neo4j: $ANALYSIS_GRAPH_BOLT_URL"
+
+# --- Launch Grammar-Guy ---
+echo "=== Launching antique.py ==="
+LOGFILE="${OSS_CRS_LOG_DIR:-/tmp}/grammar_guy_run.log"
+python -u /shellphish/grammar_guy/src/grammar_guy/gg/antique.py \
+    -n 20 \
+    --project-harness-metadata-id "$PHM_ID" \
+    --project-metadata "$AUG_DIR/augmented_metadata.json" \
+    -t "$COV_TARGET/" \
+    --project-harness-metadata "$AUG_DIR/augmented_metadata.json" \
+    -idx "$FUNC_INDEX_DIR/indices.json" \
+    -jd "$CLANG_INDEX_DIR/full" \
+    --target-split-metadata "$SPLIT_DIR/target_split_metadata.json" \
+    -s "/tmp/gg-events" \
+    --events-dir "/tmp/gg-events" \
+    2>&1 | tee "$LOGFILE"

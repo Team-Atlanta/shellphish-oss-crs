@@ -1,4 +1,6 @@
-ARG BASE_IMAGE=
+# OSS-CRS passes target_base_image; runner uses base-runner image
+ARG target_base_image
+ARG BASE_IMAGE=ghcr.io/aixcc-finals/base-runner:v1.3.0
 FROM ${BASE_IMAGE} AS aflpp-afl-compile-base
 
 
@@ -19,13 +21,14 @@ RUN cat ./coverage.md5sum
 RUN grep "a8f56f76b7949a8333e605aa3dfd3344" ./coverage.md5sum || { echo "Error: The specified line was not found in coverage.md5sum | ping @degrigis"; exit 1; }
 
 # oss-fuzz-coverage is our modified coverage bash script
-COPY oss-fuzz-coverage /usr/local/bin/
-# The oss-fuzz-coverage_live is basically keeping the coverage container up and trace every seed appearing in the 
+# OSS-CRS: adapt COPY paths (build context is shellphish-oss-crs/)
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/oss-fuzz-coverage /usr/local/bin/
+# The oss-fuzz-coverage_live is basically keeping the coverage container up and trace every seed appearing in the
 # monitored folder
-COPY oss-fuzz-coverage_live /usr/local/bin/
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/oss-fuzz-coverage_live /usr/local/bin/
 
 # coverage is our wrapper that decides between watchdog or not
-COPY coverage /usr/local/bin/
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/coverage /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/coverage
 RUN chmod +x /usr/local/bin/oss-fuzz-coverage
@@ -33,14 +36,21 @@ RUN chmod +x /usr/local/bin/oss-fuzz-coverage_live
 
 ENV PIN_ROOT $OUT/pin
 
-COPY ./pintool-tracer/pintool-json-calls.sh /usr/local/bin/pintool-json-calls.sh
-COPY ./pintool-tracer/pintool-json-inds.sh /usr/local/bin/pintool-json-inds.sh
-COPY ./pintool-tracer/get-inlines.sh /usr/local/bin/get-inlines.sh
-COPY ./pintool-tracer/extract-pointers.py /usr/local/bin/extract-pointers.py
-COPY ./pintool-tracer/dwarf_inlined_parser /usr/local/bin/dwarf_inlined_parser
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/pintool-tracer/pintool-json-calls.sh /usr/local/bin/pintool-json-calls.sh
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/pintool-tracer/pintool-json-inds.sh /usr/local/bin/pintool-json-inds.sh
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/pintool-tracer/get-inlines.sh /usr/local/bin/get-inlines.sh
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/pintool-tracer/extract-pointers.py /usr/local/bin/extract-pointers.py
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/pintool-tracer/dwarf_inlined_parser /usr/local/bin/dwarf_inlined_parser
 
 RUN chmod +x /usr/local/bin/pintool-json-calls.sh
 RUN chmod +x /usr/local/bin/pintool-json-inds.sh
 RUN chmod +x /usr/local/bin/get-inlines.sh
 RUN chmod +x /usr/local/bin/extract-pointers.py
 RUN chmod +x /usr/local/bin/dwarf_inlined_parser
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_coverage_tracer /usr/local/bin/run_coverage_tracer
+RUN chmod +x /usr/local/bin/run_coverage_tracer
+CMD ["run_coverage_tracer"]
