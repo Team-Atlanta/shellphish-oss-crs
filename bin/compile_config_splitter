@@ -1,0 +1,52 @@
+#!/bin/bash
+# OSS-CRS glue: configuration-splitter build entry point.
+# Consumes augmented-metadata, produces split-metadata (target_split_metadata JSON).
+# Replicates split_configurations.py with --include-harness-splitting.
+set -uo pipefail
+
+echo "=== configuration-splitter: starting ==="
+
+# --- Download augmented metadata ---
+AUG_DIR="/tmp/augmented-metadata"
+mkdir -p "$AUG_DIR"
+libCRS download-build-output augmented-metadata "$AUG_DIR"
+
+METADATA="$AUG_DIR/augmented_metadata.json"
+if [ ! -f "$METADATA" ]; then
+    echo "ERROR: augmented_metadata.json not found"
+    exit 1
+fi
+
+# --- Prepare dirs for PDTRepo (split_configurations.py uses them) ---
+BUILD_CONFIGS_DIR="/tmp/split-work/build-configs"
+BUILD_CONFIGS_LOCK="/tmp/split-work/build-configs-lock"
+HARNESS_INFOS_DIR="/tmp/split-work/harness-infos"
+HARNESS_INFOS_LOCK="/tmp/split-work/harness-infos-lock"
+PHM_DIR="/tmp/split-work/phm"
+PHM_LOCK="/tmp/split-work/phm-lock"
+mkdir -p "$BUILD_CONFIGS_DIR" "$BUILD_CONFIGS_LOCK" \
+         "$HARNESS_INFOS_DIR" "$HARNESS_INFOS_LOCK" \
+         "$PHM_DIR" "$PHM_LOCK"
+
+OUTPUT_DIR="/tmp/split-metadata"
+mkdir -p "$OUTPUT_DIR"
+
+PROJECT_ID="${OSS_CRS_TARGET:-unknown}"
+
+python /split_configurations.py \
+    --include-harness-splitting \
+    --project-id "$PROJECT_ID" \
+    --metadata-path "$METADATA" \
+    --build-configurations-dir "$BUILD_CONFIGS_DIR" \
+    --build-configurations-lock-dir "$BUILD_CONFIGS_LOCK" \
+    --harness-infos-dir "$HARNESS_INFOS_DIR" \
+    --harness-infos-lock-dir "$HARNESS_INFOS_LOCK" \
+    --project-harness-metadatas-dir "$PHM_DIR" \
+    --project-harness-metadatas-lock-dir "$PHM_LOCK" \
+    --target-split-metadata-path "$OUTPUT_DIR/target_split_metadata.json"
+
+RETCODE=$?
+echo "=== configuration-splitter: exited with $RETCODE ==="
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-split-metadata}"
+exit $RETCODE
