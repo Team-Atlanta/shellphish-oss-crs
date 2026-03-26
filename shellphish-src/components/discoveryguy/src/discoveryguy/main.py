@@ -133,7 +133,8 @@ class DiscoveryGuy:
                                                   oss_fuzz_project_path=self.cps_debug[0].project_path
                                                   )
 
-        self.sandbox.build_runner_image()
+        if not os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            self.sandbox.build_runner_image()
 
         # This is the object that will check if a seed is crashing the target
         self.crashChecker = CrashChecker(

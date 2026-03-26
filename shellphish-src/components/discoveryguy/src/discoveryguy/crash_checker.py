@@ -30,7 +30,7 @@ class CrashChecker:
                 if build_config_id in str(cp.project_path).split("/"):
                     self.bld_config_to_cp[build_config_id] = (cp, build_config['sanitizer'])
 
-        if Config.is_local_run:
+        if Config.is_local_run and not os.environ.get("OSSCRS_INTEGRATION_MODE"):
             for cp in self.cps:
                 cp.build_builder_image()
                 cp.build_runner_image()

@@ -670,6 +670,19 @@ class OSSFuzzProject:
 
     @tracer.start_as_current_span("image_run__local")
     def image_run__local(self, image_name, *cmd: List[str], timeout=None, volumes: Dict[Path, str]=None, extra_env: Dict[str, str]=None, extra_docker_args: List[str]=None, print_output=True) -> RunImageResult:
+        # [OSS-CRS glue] In OSSCRS mode, run commands locally instead of Docker (no DinD)
+        if os.environ.get("OSSCRS_INTEGRATION_MODE"):
+            from sandbox_runner import image_run_local_osscrs
+            return image_run_local_osscrs(
+                artifacts_dir_work=self.artifacts_dir_work,
+                artifacts_dir_out=self.artifacts_dir_out,
+                cmd=cmd,
+                timeout=timeout,
+                extra_env=extra_env,
+                volumes=volumes,
+                print_output=print_output,
+            )
+
         assert not FORBID_LOCAL_RUN, "Local runs are forbidden"
 
         self.ensure_image_exists(image_name, retries=100) # this REALLY should not fail as we expect the image to exist locally if we're trying to run it

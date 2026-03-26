@@ -1,0 +1,85 @@
+name: crs-shellphish
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  # Canonical build (needed for debug build artifacts + code-swipe)
+  - name: canonical-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-canonical
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      BUILD_OUTPUT_NAME: build-canonical
+
+  # Analysis chain (needed for code-swipe → DiscoveryGuy input)
+  - name: clang-indexer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.builder
+    outputs:
+      - clang-index
+    additional_env:
+      BUILD_OUTPUT_NAME: clang-index
+
+  # Metadata chain
+  - name: target-identifier
+    dockerfile: shellphish-src/components/target-identifier/Dockerfile
+    outputs:
+      - augmented-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: augmented-metadata
+  - name: config-splitter
+    dockerfile: shellphish-src/components/configuration-splitter/Dockerfile
+    outputs:
+      - split-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: split-metadata
+
+  # Post-processing chain (code-swipe needs func-index + semgrep)
+  - name: func-index-gen
+    dockerfile: shellphish-src/components/function-index-generator/Dockerfile
+    outputs:
+      - func-index
+    additional_env:
+      BUILD_OUTPUT_NAME: func-index
+  - name: semgrep-analysis
+    dockerfile: shellphish-src/components/semgrep/Dockerfile
+    outputs:
+      - semgrep-report
+    additional_env:
+      BUILD_OUTPUT_NAME: semgrep-report
+  - name: code-swipe
+    dockerfile: shellphish-src/components/code-swipe/Dockerfile
+    outputs:
+      - code-swipe-ranking
+    additional_env:
+      BUILD_OUTPUT_NAME: code-swipe-ranking
+
+crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
+  neo4j:
+    dockerfile: neo4j/Dockerfile
+  discoveryguy:
+    dockerfile: shellphish-src/components/discoveryguy/Dockerfile
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687"
+      DISCO_GUY_FROM: "POIS"
+      DELTA_MODE: "False"
+      LOCAL_RUN: "True"
+
+supported_target:
+  mode:
+    - full
+    - delta
+  language:
+    - c
+    - c++
+  sanitizer:
+    - address
+  architecture:
+    - x86_64
