@@ -13,7 +13,10 @@ import yaml
 import logging
 import argparse
 
-from targets import TARGET_IDENTIFIERS
+# [OSS-CRS glue] targets module provides app-specific identification (nginx, curl, etc.)
+# for invariant-guy. We don't integrate invariant-guy, so skip this import.
+# from targets import TARGET_IDENTIFIERS
+TARGET_IDENTIFIERS = {}
 from shellphish_crs_utils.models.oss_fuzz import AugmentedProjectMetadata
 from crs_telemetry.utils import (
     init_otel,

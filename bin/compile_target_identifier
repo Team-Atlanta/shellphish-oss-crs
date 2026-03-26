@@ -1,0 +1,54 @@
+#!/bin/bash
+# OSS-CRS glue: target-identifier build entry point.
+# Consumes build-canonical, produces augmented-metadata (AugmentedProjectMetadata JSON).
+# Replicates what analyze_target.py does in the original pipeline.
+set -uo pipefail
+
+echo "=== target-identifier: starting ==="
+
+# --- Download canonical build ---
+CANONICAL="/tmp/build-canonical"
+mkdir -p "$CANONICAL"
+libCRS download-build-output build-canonical "$CANONICAL"
+
+# --- Inputs ---
+HARNESS_DIR="$CANONICAL/artifacts/out"
+BUILD_META="$HARNESS_DIR/shellphish_build_metadata.yaml"
+PROJECT_YAML="$CANONICAL/project.yaml"
+
+if [ ! -f "$BUILD_META" ]; then
+    echo "ERROR: shellphish_build_metadata.yaml not found in canonical build"
+    exit 1
+fi
+if [ ! -f "$PROJECT_YAML" ]; then
+    echo "ERROR: project.yaml not found in canonical build"
+    exit 1
+fi
+
+# --- Run analyze_target.py ---
+# analyze_target.py expects:
+#   arg1: input_metadata_path (project.yaml)
+#   arg2: canonical_build_artifacts_dir (the OSSFuzzProject dir)
+#   arg3: target_dir (source dir for target identification — /src or similar)
+#   arg4: output path (where to write augmented metadata JSON)
+OUTPUT_DIR="/tmp/augmented-metadata"
+mkdir -p "$OUTPUT_DIR"
+
+# The source dir for identify_targets(). In canonical build it's at artifacts/out/.shellphish_src
+# If not present, use /src (which may also not exist — that's OK, identify_targets catches errors)
+TARGET_SRC_DIR="$CANONICAL/artifacts/out/.shellphish_src"
+if [ ! -d "$TARGET_SRC_DIR" ]; then
+    TARGET_SRC_DIR="/src"
+fi
+
+python /shellphish/target-identifier/analyze_target.py \
+    "$PROJECT_YAML" \
+    "$CANONICAL" \
+    "$TARGET_SRC_DIR" \
+    "$OUTPUT_DIR/augmented_metadata.json"
+
+RETCODE=$?
+echo "=== target-identifier: analyze_target.py exited with $RETCODE ==="
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-augmented-metadata}"
+exit $RETCODE
