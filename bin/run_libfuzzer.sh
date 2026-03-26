@@ -26,9 +26,15 @@ cd "$OUT"
 
 # --- Setup directories ---
 CRASH_DIR="/tmp/libfuzzer_crashes"
-SYNC_DIR="/tmp/libfuzzer_sync"
-mkdir -p "$CRASH_DIR" "$SYNC_DIR"
-# Create corpus directories expected by wrapper.py
+mkdir -p "$CRASH_DIR"
+
+# Fuzzer sync dir in SHARED_DIR so other run modules can access it
+# (Grammar-Composer, GrammarRoomba etc. read/write grammars and seeds here)
+SYNC_BASE="/OSS_CRS_SHARED_DIR/fuzzer_sync"
+SYNC_DIR="${SYNC_BASE}/${OSS_CRS_TARGET}-${HARNESS}-0"
+mkdir -p "$SYNC_DIR"
+
+# Create corpus directories expected by wrapper.py and seed generators
 mkdir -p "$SYNC_DIR/libfuzzer-minimized/queue"
 mkdir -p "$SYNC_DIR/sync-corpusguy/queue"
 mkdir -p "$SYNC_DIR/sync-corpusguy-kickstart/queue"
@@ -39,8 +45,17 @@ mkdir -p "$SYNC_DIR/nonsync-grammar-guy-fuzz/queue"
 mkdir -p "$SYNC_DIR/nonsync-grammarroomba/queue"
 mkdir -p "$SYNC_DIR/nonsync-discoguy/queue"
 
+# Seed input dir: seeds fetched from other CRS
+SEED_FETCH_DIR="/tmp/seeds_from_other_crs"
+mkdir -p "$SEED_FETCH_DIR"
+
 # --- Register PoV submission via libCRS ---
 libCRS register-submit-dir pov "$CRASH_DIR" &
+
+# --- Seed sharing ---
+# Fetch seeds from other CRS
+libCRS register-fetch-dir seed "$SEED_FETCH_DIR" &
+# Seed submission done via direct libCRS submit in background monitor below
 
 # --- Map OSS-CRS env vars to wrapper.py expected env vars ---
 export ARTIPHISHELL_LIBFUZZER_CRASHING_SEEDS="$CRASH_DIR"
@@ -50,6 +65,32 @@ export ARTIPHISHELL_LIBFUZZER_FUZZING_LOG="/tmp/fuzzer.log"
 # Container environment workarounds
 echo core > /proc/sys/kernel/core_pattern 2>/dev/null || true
 sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
+
+# --- Background: seed sharing monitor ---
+# Periodically copy LibFuzzer corpus to seed submit dir and import fetched seeds
+(
+    while true; do
+        sleep 10
+        # Submit interesting corpus to other CRS
+        if [ -d "$SYNC_DIR/libfuzzer-minimized/queue" ]; then
+            for seed in "$SYNC_DIR/libfuzzer-minimized/queue"/*; do
+                [ -f "$seed" ] || continue
+                bn=$(basename "$seed")
+                [ -f "/tmp/.seeds_submitted/$bn" ] && continue
+                libCRS submit seed "$seed" 2>/dev/null || true
+                mkdir -p /tmp/.seeds_submitted
+                touch "/tmp/.seeds_submitted/$bn"
+            done
+        fi
+        # Import fetched seeds into a sync dir that wrapper.py reads via -reload
+        for seed in "$SEED_FETCH_DIR"/*; do
+            [ -f "$seed" ] || continue
+            bn=$(basename "$seed")
+            mkdir -p "$SYNC_DIR/sync-external/queue"
+            [ -f "$SYNC_DIR/sync-external/queue/$bn" ] || cp "$seed" "$SYNC_DIR/sync-external/queue/$bn" 2>/dev/null || true
+        done
+    done
+) &
 
 # --- Launch LibFuzzer ---
 IFS=',' read -ra CORES <<< "$LIBFUZZER_CPUS"
