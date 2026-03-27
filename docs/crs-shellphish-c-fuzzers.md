@@ -40,6 +40,23 @@ graph TD
     end
 ```
 
+## Components
+
+### Build Phase
+
+| Step | Dockerfile | Output | Description |
+|------|-----------|--------|-------------|
+| aflpp-build | `instrumentation/aflpp/Dockerfile.builder` | `build-aflpp` | Compile target with AFL++ `afl-clang-fast` |
+| libfuzzer-build | `instrumentation/shellphish_libfuzzer/Dockerfile.builder` | `build-libfuzzer` | Compile target with modified libfuzzer |
+
+### Run Phase
+
+| Module | Dockerfile | Entry Point | Description |
+|--------|-----------|-------------|-------------|
+| entrypoint | `oss-crs-entrypoint/Dockerfile` | `run_entrypoint.sh` | CPU core allocation (mode=fuzzers) |
+| aflpp_fuzzer | `instrumentation/aflpp/Dockerfile.runner` | `run_aflpp.sh` | Multi-instance AFL++ fuzzing |
+| libfuzzer | `instrumentation/shellphish_libfuzzer/Dockerfile.runner` | `run_libfuzzer.sh` | Fork-mode LibFuzzer fuzzing |
+
 ## CRS Configuration
 
 - **CRS name:** `crs-shellphish-c-fuzzers`
