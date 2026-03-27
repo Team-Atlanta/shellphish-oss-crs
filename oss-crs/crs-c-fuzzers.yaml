@@ -1,0 +1,47 @@
+name: crs-shellphish-fuzzers
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  - name: aflpp-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
+    outputs:
+      - build-aflpp
+    additional_env:
+      FUZZING_ENGINE: shellphish_aflpp
+      BUILD_OUTPUT_NAME: build-aflpp
+
+  - name: libfuzzer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-libfuzzer
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      BUILD_OUTPUT_NAME: build-libfuzzer
+
+crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
+    additional_env:
+      CRS_PIPELINE_MODE: fuzzers
+  aflpp_fuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
+  libfuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.runner
+
+supported_target:
+  mode:
+    - full
+    - delta
+  language:
+    - c
+    - c++
+  sanitizer:
+    - address
+  architecture:
+    - x86_64

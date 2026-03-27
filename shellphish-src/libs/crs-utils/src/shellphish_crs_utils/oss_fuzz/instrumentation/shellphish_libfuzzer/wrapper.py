@@ -419,8 +419,12 @@ class VanillaFuzz(libFuzzerFuzz):
                 sync_grammar_guy_fuzz_path = self.fuzzing_environment_config.fuzzer_sync_path / "nonsync-grammar-guy-fuzz" / "queue"
                 sync_grammarroomba = self.fuzzing_environment_config.fuzzer_sync_path / "nonsync-grammarroomba" / "queue"
 
+                # [OSS-CRS glue] External seeds from other CRS via libCRS seed sharing
+                oss_crs_external_path = self.fuzzing_environment_config.fuzzer_sync_path / "sync-oss-crs-external" / "queue"
+
                 corpus_collection = [corpusguy_path, kickstarter_corpus, corpus_guy_kickstart_crashes_path, permanence_corpus,
-                sync_grammar_agent_explorer_path, sync_grammar_guy_fuzz_path, sync_grammarroomba, disco_guy_path]
+                sync_grammar_agent_explorer_path, sync_grammar_guy_fuzz_path, sync_grammarroomba, disco_guy_path,
+                oss_crs_external_path]
 
                 for path in corpus_collection:
                     path.mkdir(parents=True, exist_ok=True)

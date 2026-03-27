@@ -69,6 +69,7 @@ sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
 # --- Background: seed sharing monitor ---
 # Periodically copy LibFuzzer corpus to seed submit dir and import fetched seeds
 (
+    set +e  # glob on empty dirs returns literal '*', which fails under -e
     while true; do
         sleep 10
         # Submit interesting corpus to other CRS
@@ -86,8 +87,8 @@ sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
         for seed in "$SEED_FETCH_DIR"/*; do
             [ -f "$seed" ] || continue
             bn=$(basename "$seed")
-            mkdir -p "$SYNC_DIR/sync-external/queue"
-            [ -f "$SYNC_DIR/sync-external/queue/$bn" ] || cp "$seed" "$SYNC_DIR/sync-external/queue/$bn" 2>/dev/null || true
+            mkdir -p "$SYNC_DIR/sync-oss-crs-external/queue"
+            [ -f "$SYNC_DIR/sync-oss-crs-external/queue/$bn" ] || cp "$seed" "$SYNC_DIR/sync-oss-crs-external/queue/$bn" 2>/dev/null || true
         done
     done
 ) &
