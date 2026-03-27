@@ -42,10 +42,10 @@ graph TD
 
 ## CRS Configuration
 
-**CRS name:** `crs-shellphish-c-fuzzers`
-**File:** `oss-crs/crs-c-fuzzers.yaml`
-**Registry:** `oss-crs/registry/crs-shellphish-c-fuzzers.yaml`
-**Example compose:** `oss-crs/example/crs-shellphish-c-fuzzers/compose.yaml`
+- **CRS name:** `crs-shellphish-c-fuzzers`
+- **File:** `oss-crs/crs-c-fuzzers.yaml`
+- **Registry:** `oss-crs/registry/crs-shellphish-c-fuzzers.yaml`
+- **Example compose:** `oss-crs/example/crs-shellphish-c-fuzzers/compose.yaml`
 
 ### Deployment
 
