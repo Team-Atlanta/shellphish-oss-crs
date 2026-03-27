@@ -80,7 +80,20 @@ LIBFUZZER_CPUS=5,6,7
 
 Both fuzzers wait for this file at startup.
 
+## Prepare Phase (Prebuild)
+
+`docker-bake.hcl` builds prebuild images in prepare phase:
+
+| Image | Source | Content |
+|-------|--------|---------|
+| `crs-aflpp-prebuild` | `aflpp/Dockerfile.prebuild` | AFL++ v4.30c + Nautilus grammar mutator |
+| `crs-libfuzzer-prebuild` | `shellphish_libfuzzer/Dockerfile.prebuild` | Modified libfuzzer with Shellphish patches |
+
+Builder Dockerfiles use `COPY --from=prebuild` to get pre-compiled fuzzer tools without rebuilding each time.
+
 ## Build Phase
+
+Both build steps use `target_base_image` (target source + build deps) as base, overlaying fuzzer tools from prebuild. Outputs are transferred to run phase via `libCRS submit-build-output` / `libCRS download-build-output`.
 
 ### aflpp-build
 
@@ -94,7 +107,7 @@ Both fuzzers wait for this file at startup.
 - **Dockerfile:** `instrumentation/shellphish_libfuzzer/Dockerfile.builder`
 - **Base:** `FROM ${target_base_image}` + `FROM prebuild` (modified libfuzzer)
 - **Output:** `build-libfuzzer` — harness binaries compiled with libfuzzer instrumentation + `wrapper.py`
-- **Entry point:** `compile_canonical_build` or `compile_shellphish_libfuzzer` (dispatched by `BUILD_OUTPUT_NAME`)
+- **Entry point:** `compile_shellphish_libfuzzer` — `compile` → `post_build_commands` → `libCRS submit`
 
 ## Run Phase
 
@@ -257,6 +270,10 @@ runs/cfuzzers-final-01-{hash}/
 ## Verification Checklist
 
 After a run, verify each point with specific evidence:
+
+### 0. Prepare phase
+**Command:** `docker images | grep crs-`
+**Check:** `crs-aflpp-prebuild:latest` and `crs-libfuzzer-prebuild:latest` exist.
 
 ### 1. Entrypoint CPU allocation
 **Log:** `*_entrypoint.stdout.log`
