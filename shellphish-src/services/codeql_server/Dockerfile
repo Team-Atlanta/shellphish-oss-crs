@@ -13,7 +13,8 @@ ARG CODEQL_VERSION="2.22.0"
 RUN wget -qO- "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_VERSION}/codeql-bundle-linux64.tar.gz" | tar -zxvf - -C /app
 ENV PATH=/app/codeql:$PATH
 
-COPY . /app/codeql_server
+# [OSS-CRS glue] COPY path: build context is shellphish-oss-crs/, not the service dir
+COPY shellphish-src/services/codeql_server /app/codeql_server
 RUN pip install -e /app/codeql_server
 
 # This is from shellphish-support-syndicate/codeql-mirror, run pack.sh in the repo to generate the latest pack
@@ -30,4 +31,10 @@ RUN mkdir /compiled_packs && \
     mkdir cpp-all && \
     wget -qO- https://raw.githubusercontent.com/a3c1dd56-ce26-4695-aa35-01bc566eb8d4/70261b66-88f0-4957-9568-2dba2faf0916/refs/heads/main/cpp-all.tgz | tar zxf - -C cpp-all
 
-CMD ["codeql-server"]
+# [OSS-CRS glue] libCRS + run entry point
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_codeql_server /usr/local/bin/run_codeql_server
+RUN chmod +x /usr/local/bin/run_codeql_server
+
+CMD ["run_codeql_server"]

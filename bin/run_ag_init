@@ -1,0 +1,45 @@
+#!/bin/bash
+# OSS-CRS glue: AG init run module.
+# Runs analysis_query.py (queries CodeQL server -> writes Neo4j).
+# Based on original codeql_analysis_graph pipeline task.
+set -eu
+
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+LANG="${FUZZING_LANGUAGE:-c}"
+
+echo "=== AG Init starting ==="
+
+# --- Download inputs ---
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+CLANG_INDEX_DIR="/tmp/clang-index"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+# --- Environment ---
+export CP_NAME="$PROJECT"
+export PROJ_ID="$PROJECT"
+export LANG="$LANG"
+export FUNCTION_INDEX_PATH="$FUNC_INDEX_DIR/indices.json"
+export FUNCTION_JSON_DIR="$CLANG_INDEX_DIR/full"
+# analysis_graph transitively imports agentlib which checks LITELLM_KEY + LITELLM_HOSTNAME.
+# AG init doesn't use LLM, but the import chain requires these to be set.
+export LITELLM_KEY="${LITELLM_KEY:-dummy-ag-init}"
+export AIXCC_LITELLM_HOSTNAME="${AIXCC_LITELLM_HOSTNAME:-${OSS_CRS_LLM_API_URL:-http://localhost:4001}}"
+export USE_LLM_API=1
+
+echo "=== Running callgraph analysis ==="
+cd /shellphish/codeql/callgraph
+timeout 60m python3 analysis_query.py 2>&1 || echo "WARNING: Callgraph analysis had errors (non-fatal)"
+
+# Signal completion to other containers
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+mkdir -p "$SHARED"
+touch "$SHARED/ag_init_done"
+echo "=== AG Init complete ==="
+
+# Stay alive — oss-crs uses --abort-on-container-exit, so exiting
+# would stop all other containers.
+sleep infinity

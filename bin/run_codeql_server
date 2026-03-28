@@ -1,0 +1,74 @@
+#!/bin/bash
+# OSS-CRS glue: CodeQL server run module.
+# Downloads CodeQL database from build output, starts server, uploads DB.
+# Stays running so discoveryguy can query it (analysis_query.py + CodeQlSkill).
+set -eu
+
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    c|c++) QLANG="cpp" ;;
+    jvm|java) QLANG="java" ;;
+    *) echo "ERROR: Unsupported language $LANG"; exit 1 ;;
+esac
+
+echo "=== CodeQL Server starting: project=$PROJECT lang=$LANG ==="
+
+# --- Download CodeQL database ---
+CODEQL_DIR="/tmp/codeql-input"
+mkdir -p "$CODEQL_DIR"
+libCRS download-build-output codeql-analysis "$CODEQL_DIR"
+
+DB_ZIP="$CODEQL_DIR/sss-codeql-database.zip"
+if [ ! -f "$DB_ZIP" ]; then
+    echo "ERROR: sss-codeql-database.zip not found in codeql-analysis output"
+    ls -la "$CODEQL_DIR/"
+    exit 1
+fi
+
+# --- Start CodeQL server ---
+echo "Starting CodeQL server..."
+mkdir -p /shared/codeql_server
+codeql-server --host 0.0.0.0 --port 4000 &
+SERVER_PID=$!
+
+# Wait for server to be ready (CodeQLClient has its own retries,
+# but we need server up before uploading DB)
+for i in $(seq 1 30); do
+    if curl -s "http://localhost:4000/health" >/dev/null 2>&1 || \
+       curl -s "http://localhost:4000/" >/dev/null 2>&1; then
+        echo "CodeQL server ready."
+        break
+    fi
+    sleep 2
+done
+
+# --- Upload database ---
+echo "Uploading database..."
+UPLOAD_RESP=$(curl -s -X POST "http://localhost:4000/upload_db" \
+  -F "db_file=@$DB_ZIP" \
+  -F "cp_name=$PROJECT" \
+  -F "project_id=$PROJECT" \
+  -F "language=$QLANG")
+echo "Upload response: $UPLOAD_RESP"
+
+TASK_ID=$(echo "$UPLOAD_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null)
+if [ -n "$TASK_ID" ]; then
+    for i in $(seq 1 60); do
+        STATUS=$(curl -s "http://localhost:4000/task/$TASK_ID" | \
+          python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+        if [ "$STATUS" = "completed" ]; then
+            echo "Database uploaded successfully."
+            break
+        elif [ "$STATUS" = "failed" ]; then
+            echo "WARNING: Database upload failed."
+            break
+        fi
+        sleep 2
+    done
+fi
+
+echo "=== CodeQL Server ready, waiting for queries ==="
+
+# Keep running until container is stopped
+wait $SERVER_PID

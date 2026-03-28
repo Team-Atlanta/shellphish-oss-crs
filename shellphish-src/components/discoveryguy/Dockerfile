@@ -43,9 +43,6 @@ COPY bin/sandbox_runner.py /usr/local/lib/python3.10/dist-packages/sandbox_runne
 COPY bin/run_discoveryguy /usr/local/bin/run_discoveryguy
 RUN chmod +x /usr/local/bin/run_discoveryguy
 
-# [OSS-CRS glue] Disable CodeQL server (not available in OSSCRS, DiscoveryGuy works without it)
-RUN sed -i 's/use_codeql_server: bool = True/use_codeql_server: bool = False/' /src/discoveryguy/config.py
-
 # [OSS-CRS glue] Map model names to external litellm-compatible names
 RUN find /src /shellphish -name "*.py" -exec sed -i \
     -e 's/claude-4-sonnet/claude-sonnet-4-6/g' \

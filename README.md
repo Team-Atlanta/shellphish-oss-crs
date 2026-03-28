@@ -9,7 +9,7 @@ Each pipeline is a self-contained CRS configuration. Deploy by copying its yaml 
 | Pipeline | CRS Name | Config | Doc |
 |----------|----------|--------|-----|
 | **C Fuzzers** | `crs-shellphish-c-fuzzers` | `oss-crs/crs-c-fuzzers.yaml` | [docs/crs-shellphish-c-fuzzers.md](docs/crs-shellphish-c-fuzzers.md) |
-| **DiscoveryGuy** | `crs-shellphish-discoveryguy` | `oss-crs/crs-discoveryguy.yaml` | docs/crs-shellphish-discoveryguy.md |
+| **DiscoveryGuy** | `crs-shellphish-discoveryguy` | `oss-crs/crs-discoveryguy.yaml` | [docs/crs-shellphish-discoveryguy.md](docs/crs-shellphish-discoveryguy.md) |
 | **AIJON** | `crs-shellphish-aijon` | `oss-crs/crs-aijon.yaml` | docs/crs-shellphish-aijon.md |
 | **Grammar** | `crs-shellphish-grammar` | `oss-crs/crs-grammar.yaml` | docs/crs-shellphish-grammar.md |
 

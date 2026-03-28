@@ -1,0 +1,5 @@
+# [OSS-CRS glue] AG init run module.
+# Reuses codeql-analysis build image (has CodeQL CLI + callgraph code + analysis-graph libs).
+# Overrides CMD to run_ag_init (queries CodeQL server -> writes Neo4j).
+FROM crs-shellphish-discoveryguy-codeql-analysis:latest
+CMD ["run_ag_init"]

@@ -1,0 +1,72 @@
+#!/bin/bash
+# OSS-CRS glue: CodeQL analysis build step.
+# Runs CWE queries via CodeQL CLI → resolved report (for code-swipe CodeqlCWEFilter).
+# Callgraph analysis (analysis_query.py) runs in the run phase against a live
+# CodeQL server + Neo4j, not here.
+# Reuses Shellphish's original run_cwe_queries.py.
+set -euo pipefail
+
+echo "=== CodeQL Analysis starting ==="
+
+# --- Download inputs ---
+CODEQL_DB_DIR="/tmp/codeql-db-input"
+mkdir -p "$CODEQL_DB_DIR"
+libCRS download-build-output codeql-db "$CODEQL_DB_DIR"
+
+FUNC_INDEX_DIR="/tmp/func-index-input"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+CLANG_INDEX_DIR="/tmp/clang-index-input"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+# --- Unzip CodeQL database ---
+DB_PATH="/tmp/codeql-database"
+mkdir -p "$DB_PATH"
+if [ -f "$CODEQL_DB_DIR/sss-codeql-database.zip" ]; then
+    unzip -q "$CODEQL_DB_DIR/sss-codeql-database.zip" -d "$DB_PATH"
+    echo "CodeQL database extracted."
+else
+    echo "ERROR: sss-codeql-database.zip not found"
+    exit 1
+fi
+
+# --- Detect language ---
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    c|c++) QLANG="cpp" ;;
+    jvm|java) QLANG="java" ;;
+    *) echo "ERROR: Unsupported language $LANG"; exit 1 ;;
+esac
+
+PROJECT="${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}"
+
+# --- Output directory ---
+OUTPUT_DIR="/tmp/codeql-analysis-output"
+mkdir -p "$OUTPUT_DIR"
+
+DB_ACTUAL="$DB_PATH/.sss-codeql-database"
+
+# --- Run CWE queries (CLI, no server needed) ---
+echo "=== Running CWE queries ==="
+cd /shellphish/codeql/cwe_queries
+python3 run_cwe_queries.py \
+    --project-name "$PROJECT" \
+    --project-id "$PROJECT" \
+    --codeql-cwe-sarif-report "$OUTPUT_DIR/codeql-cwe-sarif.sarif" \
+    --codeql-cwe-report "$OUTPUT_DIR/codeql-cwe-report.json" \
+    --language "$LANG" \
+    --full-functions-indices "$FUNC_INDEX_DIR/indices.json" \
+    --functions-json-dir "$CLANG_INDEX_DIR/full" \
+    --codeql-database-path "$DB_ACTUAL" \
+    --skip-analysis-graph \
+    2>&1 || echo "WARNING: CWE queries failed (non-fatal)"
+
+# --- Preserve database zip for run phase (CodeQL server needs it) ---
+cp "$CODEQL_DB_DIR"/*.zip "$OUTPUT_DIR/" 2>/dev/null || true
+
+echo "=== CodeQL Analysis complete ==="
+ls -la "$OUTPUT_DIR/"
+
+libCRS submit-build-output "$OUTPUT_DIR" "${BUILD_OUTPUT_NAME:-codeql-analysis}"

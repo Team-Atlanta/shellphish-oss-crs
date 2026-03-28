@@ -33,6 +33,11 @@ SPLIT_DIR="/tmp/split-metadata"
 mkdir -p "$SPLIT_DIR"
 libCRS download-build-output split-metadata "$SPLIT_DIR"
 
+CODEQL_DIR="/tmp/codeql-analysis"
+mkdir -p "$CODEQL_DIR"
+libCRS download-build-output codeql-analysis "$CODEQL_DIR" 2>/dev/null || true
+CODEQL_DB_ZIP="$CODEQL_DIR/sss-codeql-database.zip"
+
 echo "Build outputs downloaded."
 
 # --- Set up debug build structure ---
@@ -76,6 +81,12 @@ elif [ -d "$CANONICAL_DIR/out" ]; then
     cp -r "$CANONICAL_DIR/out" "$BUILD_TARGET/artifacts/out"
 fi
 mkdir -p "$BUILD_TARGET/artifacts/work"
+# DiscoveryGuy reads harness source from artifacts/built_src/ (project.py:300).
+# In original system, build_target__local() moves out/.shellphish_src → built_src/.
+# We symlink instead since our canonical build preserves source at out/.shellphish_src/.
+if [ -d "$BUILD_TARGET/artifacts/out/.shellphish_src" ]; then
+    ln -sf out/.shellphish_src "$BUILD_TARGET/artifacts/built_src"
+fi
 # OSSFuzzProject.__init__ asserts Dockerfile exists in project path
 # canonical build output has Dockerfile/build.sh/project.yaml at top level
 for f in Dockerfile build.sh project.yaml; do
@@ -128,6 +139,29 @@ export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
 # Neo4j
 export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687}"
 
+# CodeQL server (run phase sidecar container)
+export CODEQL_SERVER_URL="${CODEQL_SERVER_URL:-http://codeql-server.crs-shellphish-discoveryguy:4000}"
+
+# --- Wait for AG init (populates Neo4j with callgraph data) ---
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+echo "Waiting for AG init..."
+AG_WAIT=0
+while [ $AG_WAIT -lt 300 ] && [ ! -f "$SHARED/ag_init_done" ]; do
+    sleep 5
+    AG_WAIT=$((AG_WAIT + 5))
+done
+[ -f "$SHARED/ag_init_done" ] && echo "AG init done." || echo "WARNING: AG init not completed in time, continuing without callgraph data."
+
+# --- Wait for Neo4j ---
+echo "Waiting for Neo4j..."
+NEO4J_WAIT=0
+while [ $NEO4J_WAIT -lt 60 ]; do
+    if timeout 10 python3 -c "from neomodel import db; db.set_connection('${ANALYSIS_GRAPH_BOLT_URL}'); db.cypher_query('RETURN 1')" 2>&1; then echo "Neo4j connected."; break; fi
+    echo "Neo4j not ready yet (attempt $((NEO4J_WAIT/5+1)))"
+    sleep 5
+    NEO4J_WAIT=$((NEO4J_WAIT + 5))
+done
+
 # Output directories
 CRASH_DIR="/tmp/disco-crashes"
 REPORT_DIR="/tmp/disco-reports"
@@ -158,4 +192,5 @@ python -u run.py \
     --report_dir "$REPORT_DIR" \
     --crash_dir_pass_to_pov "$CRASH_DIR" \
     --crash_metadata_dir_pass_to_pov "$CRASH_DIR" \
+    ${CODEQL_DB_ZIP:+--codeql_db_path "$CODEQL_DB_ZIP"} \
     2>&1 | tee /tmp/discoveryguy_run.log
