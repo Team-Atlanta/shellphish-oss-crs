@@ -23,10 +23,9 @@ COPY shellphish-src/components/aijon/ /aijon/
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
 
-# [OSS-CRS glue] Install glue entry point and AG population script
+# [OSS-CRS glue] Install glue entry point
 COPY bin/run_aijon_instrumentation /usr/local/bin/run_aijon_instrumentation
-COPY bin/populate_ag_from_index.py /usr/local/bin/populate_ag_from_index.py
-RUN chmod +x /usr/local/bin/run_aijon_instrumentation /usr/local/bin/populate_ag_from_index.py
+RUN chmod +x /usr/local/bin/run_aijon_instrumentation
 
 # [OSS-CRS glue] Disable OTEL (no collector in OSSCRS)
 ENV OTEL_SDK_DISABLED=true

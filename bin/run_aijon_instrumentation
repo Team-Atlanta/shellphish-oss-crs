@@ -129,27 +129,26 @@ export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
 # Telemetry: disable
 export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
 
-# Neo4j (for AG queries — optional, degrades gracefully)
+# Neo4j (for AG queries)
 export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687}"
 
-# Wait for Neo4j to be ready (if AG is available, improves instrumentation quality)
-echo "Waiting for Neo4j to be ready (max 60s)..."
+# --- Wait for AG init (populates Neo4j with callgraph data) ---
+echo "Waiting for AG init..."
+AG_WAIT=0
+while [ $AG_WAIT -lt 300 ] && [ ! -f "$SHARED/ag_init_done" ]; do
+    sleep 5
+    AG_WAIT=$((AG_WAIT + 5))
+done
+[ -f "$SHARED/ag_init_done" ] && echo "AG init done." || echo "WARNING: AG init not completed in time, continuing without callgraph data."
+
+# Wait for Neo4j connection
+echo "Waiting for Neo4j..."
 NEO4J_WAIT=0
 while [ $NEO4J_WAIT -lt 60 ]; do
-    if python3 -c "
-from neomodel import db
-db.set_connection('${ANALYSIS_GRAPH_BOLT_URL}')
-db.cypher_query('RETURN 1')
-" 2>/dev/null; then
-        echo "Neo4j ready."
-        break
-    fi
+    if timeout 10 python3 -c "from neomodel import db; db.set_connection('${ANALYSIS_GRAPH_BOLT_URL}'); db.cypher_query('RETURN 1')" 2>/dev/null; then echo "Neo4j connected."; break; fi
     sleep 5
     NEO4J_WAIT=$((NEO4J_WAIT + 5))
 done
-if [ $NEO4J_WAIT -ge 60 ]; then
-    echo "WARNING: Neo4j not ready after 60s. Continuing without AG (degraded mode)."
-fi
 
 echo "=== Running AIJON instrumentation ==="
 echo "  Source: $TARGET_SOURCE"
