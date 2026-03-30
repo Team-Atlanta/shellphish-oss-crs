@@ -194,4 +194,4 @@ LLM-generated IJON annotations for `process_input_header`:
 
 - **AG init timing**: For large projects (e.g. nginx, 14240 functions), CodeQL queries take several minutes. AIJON instrumentation waits up to 300s. If AG init doesn't complete, AIJON proceeds without callgraph data (degraded).
 - **AIJON builder compile failures**: If the IJON-patched source doesn't compile, the LLM fixer loop retries. If all retries fail, AIJON fuzzer never starts (standard AFL++ still runs).
-- **Single IJON pass**: AIJON instrumentation runs once and exits. No iterative refinement based on coverage feedback (unlike the original system's continuous loop).
+- **Single IJON pass**: AIJON instrumentation generates one patch and exits (same as original system). Retries up to 10 times if instrumentation fails (empty allowlist), with 10-minute intervals.
