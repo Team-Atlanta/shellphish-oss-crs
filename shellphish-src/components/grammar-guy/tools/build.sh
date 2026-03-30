@@ -11,9 +11,8 @@ if [ ! -d grammarinator ]; then
 fi
 
 pushd grammarinator
-# [OSS-CRS glue] Pin to tag 23.7 — the patch was written against this version
-# (verified: .gitignore blob e13ba77 matches tag 23.7)
-git checkout 23.7 2>/dev/null || git fetch --tags && git checkout 23.7
+# [OSS-CRS glue] Pin to 2025 Jun 9 commit — the exact version the patch was written for
+git checkout 8fb170f8237eda017b402c98817777da7a796093
 git reset --hard
 git apply "$(realpath ../patches/grammarinator/grammarinator_full.patch)"
 popd
