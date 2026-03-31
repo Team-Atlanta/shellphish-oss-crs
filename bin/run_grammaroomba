@@ -98,3 +98,7 @@ python -u /shellphish/grammaroomba/src/grammaroomba/run.py \
     --project-metadata "$AUG_DIR/augmented_metadata.json" \
     --events-dir "/tmp/roomba-events" \
     2>&1 | tee "$LOGFILE"
+
+# run.py has `while True` loop and never exits normally.
+# If it does exit, something is wrong — let the pipeline stop.
+exit 1

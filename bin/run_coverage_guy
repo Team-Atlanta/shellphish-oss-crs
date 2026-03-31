@@ -1,0 +1,184 @@
+#!/bin/bash
+# OSS-CRS glue: coverage-guy run module.
+# Monitors AFL++ seeds, traces coverage for each, writes HarnessInputNode to Neo4j.
+# This is needed for GrammarRoomba to function.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+echo "=== Coverage-Guy starting: harness=$HARNESS project=$PROJECT ==="
+
+# --- Download build outputs ---
+COV_TARGET="${SHARED}/coverage-build-covguy"
+mkdir -p "$COV_TARGET"
+libCRS download-build-output build-coverage "$COV_TARGET"
+
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+CLANG_INDEX_DIR="/tmp/clang-index"
+mkdir -p "$CLANG_INDEX_DIR"
+libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+
+AUG_DIR="/tmp/augmented-metadata"
+mkdir -p "$AUG_DIR"
+libCRS download-build-output augmented-metadata "$AUG_DIR"
+
+SPLIT_DIR="/tmp/split-metadata"
+mkdir -p "$SPLIT_DIR"
+libCRS download-build-output split-metadata "$SPLIT_DIR"
+
+echo "Build outputs downloaded."
+
+# --- Find harness info ---
+PHM_ID=$(python3 -c "
+import json, sys
+with open('$SPLIT_DIR/target_split_metadata.json') as f:
+    meta = json.load(f)
+for k, v in meta.get('project_harness_metadatas', {}).items():
+    if v.get('cp_harness_name') == '$HARNESS':
+        print(k)
+        sys.exit(0)
+print('ERROR: harness $HARNESS not found', file=sys.stderr)
+sys.exit(1)
+")
+echo "Found project_harness_metadata_id: $PHM_ID"
+
+# monitor_fast.py hardcodes /shared/coverageguy/ for temp dirs.
+# In OSSCRS, shared dir is $OSS_CRS_SHARED_DIR (not /shared/).
+# Create /shared as symlink or ensure the hardcoded path exists.
+if [ "$SHARED" != "/shared" ]; then
+    rm -rf /shared 2>/dev/null || true
+    ln -sfn "$SHARED" /shared
+fi
+mkdir -p /shared/coverageguy
+
+# --- Set up target directory structure ---
+# coverage-guy expects oss-fuzz project structure at target_dir
+TARGET_DIR="${SHARED}/coverageguy/${PROJECT}"
+mkdir -p "$TARGET_DIR/projects/$PROJECT"
+rsync -ra "$COV_TARGET/" "$TARGET_DIR/projects/$PROJECT/"
+
+# --- Set up AFL++ seeds as PDTRepo directories ---
+# coverage-guy reads seeds from PDTRepo(main_dir, lock_dir).
+# AFL++ seeds are at fuzzer_sync/{project}-{harness}-0/main/queue/.
+# We create PDTRepo-compatible directories:
+#   benign: symlink to AFL++ queue (seeds without locks are "ready")
+#   crashing: symlink to AFL++ crashes
+SYNC_BASE="${SHARED}/fuzzer_sync"
+BENIGN_DIR="${SHARED}/covguy-benign-seeds"
+BENIGN_LOCK="${SHARED}/covguy-benign-lock"
+CRASHING_DIR="${SHARED}/covguy-crashing-seeds"
+CRASHING_LOCK="${SHARED}/covguy-crashing-lock"
+mkdir -p "$BENIGN_DIR" "$BENIGN_LOCK" "$CRASHING_DIR" "$CRASHING_LOCK"
+
+# Background loop: copy new AFL++ seeds to PDTRepo dirs
+feed_seeds_to_pdtrepo() {
+    echo "Seed feeder: waiting for AFL++ sync dir..."
+    while [ ! -d "$SYNC_BASE" ]; do sleep 5; done
+
+    AFLPP_DIR=""
+    while [ -z "$AFLPP_DIR" ]; do
+        AFLPP_DIR=$(find "$SYNC_BASE" -name "main" -type d 2>/dev/null | head -1)
+        [ -z "$AFLPP_DIR" ] && sleep 5
+    done
+    AFLPP_QUEUE="$AFLPP_DIR/queue"
+    AFLPP_CRASHES="$AFLPP_DIR/../crashes"
+    echo "Seed feeder: AFL++ queue=$AFLPP_QUEUE crashes=$AFLPP_CRASHES"
+
+    SEEN_FILE="/tmp/covguy_seen_seeds"
+    touch "$SEEN_FILE"
+
+    while true; do
+        sleep 10
+        # Copy benign seeds
+        if [ -d "$AFLPP_QUEUE" ]; then
+            for seed in "$AFLPP_QUEUE"/id:*; do
+                [ -f "$seed" ] || continue
+                SEED_NAME=$(basename "$seed")
+                if ! grep -qF "$SEED_NAME" "$SEEN_FILE" 2>/dev/null; then
+                    cp "$seed" "$BENIGN_DIR/$SEED_NAME"
+                    echo "$SEED_NAME" >> "$SEEN_FILE"
+                fi
+            done
+        fi
+        # Copy crashing seeds
+        if [ -d "$AFLPP_CRASHES" ]; then
+            for seed in "$AFLPP_CRASHES"/id:*; do
+                [ -f "$seed" ] || continue
+                SEED_NAME=$(basename "$seed")
+                if ! grep -qF "crash-$SEED_NAME" "$SEEN_FILE" 2>/dev/null; then
+                    cp "$seed" "$CRASHING_DIR/$SEED_NAME"
+                    echo "crash-$SEED_NAME" >> "$SEEN_FILE"
+                fi
+            done
+        fi
+    done
+}
+
+feed_seeds_to_pdtrepo &
+FEEDER_PID=$!
+echo "Seed feeder started (PID=$FEEDER_PID)"
+
+# --- Environment ---
+export OSSCRS_INTEGRATION_MODE=1
+# LOCAL_RUN=True for LocalFunctionResolver (no remote resolver in OSSCRS).
+# But LOCAL_RUN=True sets num_db_uploaders=0 (no Neo4j writes).
+# We patch Config to force uploaders on despite LOCAL_RUN.
+export LOCAL_RUN="1"
+export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish:7687}"
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+# coverage-guy imports agentlib (via analysis_graph → crs_telemetry → openlit)
+# which checks LITELLM_KEY at module load. Coverage-guy doesn't use LLM.
+export LITELLM_KEY="${LITELLM_KEY:-dummy-covguy}"
+export AIXCC_LITELLM_HOSTNAME="${AIXCC_LITELLM_HOSTNAME:-${OSS_CRS_LLM_API_URL:-http://localhost:4001}}"
+export USE_LLM_API=1
+
+# covlib workdir for coverage-guy's internal Tracer (shared with coverage_tracer_covguy)
+export OSSCRS_COVLIB_WORKDIR="${SHARED}/coverage-build-covguy/artifacts/work/covlib"
+mkdir -p "$OSSCRS_COVLIB_WORKDIR"
+
+# Wait for coverage_tracer_covguy's oss-fuzz-coverage_live to start
+echo "Waiting for coverage_tracer_covguy..."
+WAIT=0
+while [ $WAIT -lt 300 ] && [ ! -f "$OSSCRS_COVLIB_WORKDIR/raw-results/.oss-fuzz-coverage_live.started" ]; do
+    sleep 5
+    WAIT=$((WAIT + 5))
+done
+[ -f "$OSSCRS_COVLIB_WORKDIR/raw-results/.oss-fuzz-coverage_live.started" ] && echo "coverage_tracer_covguy ready." || echo "WARNING: coverage_tracer not ready, continuing anyway."
+
+# Extract harness_info from split metadata as YAML file
+HARNESS_INFO_FILE="/tmp/harness_info.yaml"
+python3 -c "
+import json, yaml
+with open('$SPLIT_DIR/target_split_metadata.json') as f:
+    meta = json.load(f)
+phm = meta['project_harness_metadatas']['$PHM_ID']
+# Find matching harness_info
+for hi_id, hi in meta.get('harness_infos', {}).items():
+    if hi.get('cp_harness_name') == '$HARNESS':
+        with open('$HARNESS_INFO_FILE', 'w') as out:
+            yaml.safe_dump(hi, out)
+        print(f'Wrote harness_info to $HARNESS_INFO_FILE')
+        break
+"
+
+echo "=== Launching coverage-guy ==="
+python3 -u /shellphish/coverageguy/monitor_fast.py \
+    --target_dir "$TARGET_DIR/projects/$PROJECT/" \
+    --harness_info_id "$PHM_ID" \
+    --harness_info "$HARNESS_INFO_FILE" \
+    --project_id "$PROJECT" \
+    --project_metadata "$AUG_DIR/augmented_metadata.json" \
+    --function_index "$FUNC_INDEX_DIR/indices.json" \
+    --function_index_json_dir "$CLANG_INDEX_DIR/full" \
+    --benign_inputs_dir "$BENIGN_DIR" \
+    --benign_inputs_dir_lock "$BENIGN_LOCK" \
+    --crashing_inputs_dir "$CRASHING_DIR" \
+    --crashing_inputs_dir_lock "$CRASHING_LOCK" \
+    2>&1
+
+# Stay alive
+exec sleep infinity

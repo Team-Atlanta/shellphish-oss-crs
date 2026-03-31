@@ -14,6 +14,22 @@ LABEL org.opencontainers.image.source=${SOURCE_REPO}
 RUN pip install pympler
 
 RUN mkdir -p /shellphish/coverageguy
-COPY . /shellphish/coverageguy/
+# [OSS-CRS glue] COPY path: build context is shellphish-oss-crs/, not the component dir
+COPY shellphish-src/components/coverage-guy /shellphish/coverageguy/
 
-RUN chmod +x /shellphish/coverageguy/run.sh
+# [OSS-CRS glue] Update coveragelib with OSSCRS trace() ordering fix
+COPY shellphish-src/libs/coveragelib /shellphish/libs/coveragelib
+RUN pip3 install -e /shellphish/libs/coveragelib
+
+# [OSS-CRS glue] Update analysis-graph (component-base has neomodel without version pin;
+# our pyproject.toml pins neomodel<6 for API compatibility)
+COPY shellphish-src/libs/analysis-graph /shellphish/libs/analysis-graph
+RUN pip3 install -e /shellphish/libs/analysis-graph
+
+# [OSS-CRS glue] libCRS + glue entry point
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_coverage_guy /usr/local/bin/run_coverage_guy
+RUN chmod +x /usr/local/bin/run_coverage_guy /shellphish/coverageguy/run.sh
+
+CMD ["run_coverage_guy"]

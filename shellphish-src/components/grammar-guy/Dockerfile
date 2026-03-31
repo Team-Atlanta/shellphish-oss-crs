@@ -30,9 +30,20 @@ RUN find /shellphish -name "*.py" -exec sed -i \
     -e 's/oai-//g' \
     {} + 2>/dev/null || true
 
+# [OSS-CRS glue] Update coveragelib with OSSCRS_INTEGRATION_MODE trace() ordering fix
+COPY shellphish-src/libs/coveragelib /shellphish/libs/coveragelib
+RUN pip3 install -e /shellphish/libs/coveragelib
+
+# [OSS-CRS glue] Update analysis-graph (component-base has stale version; Grammar-Guy needs
+# the latest for register_grammar_function_coverage to write COVERS relationships correctly)
+COPY shellphish-src/libs/analysis-graph /shellphish/libs/analysis-graph
+RUN pip3 install -e /shellphish/libs/analysis-graph
+
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
+# [OSS-CRS glue] Coverage processing runs in external coverage_tracer container (runner environment).
+# Grammar-Guy shares covlib workdir with it; no local oss-fuzz-coverage needed.
 COPY bin/run_grammar_guy /usr/local/bin/run_grammar_guy
 RUN chmod +x /usr/local/bin/run_grammar_guy
 CMD ["run_grammar_guy"]

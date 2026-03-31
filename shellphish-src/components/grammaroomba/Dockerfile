@@ -28,6 +28,15 @@ RUN find /shellphish -name "*.py" -exec sed -i \
     -e 's/oai-//g' \
     {} + 2>/dev/null || true
 
+# [OSS-CRS glue] Update analysis-graph (component-base has neomodel without version pin;
+# our pyproject.toml pins neomodel<6 for API compatibility)
+COPY shellphish-src/libs/analysis-graph /shellphish/libs/analysis-graph
+RUN pip3 install -e /shellphish/libs/analysis-graph
+
+# [OSS-CRS glue] Update coveragelib with OSSCRS trace() ordering fix
+COPY shellphish-src/libs/coveragelib /shellphish/libs/coveragelib
+RUN pip3 install -e /shellphish/libs/coveragelib
+
 # --- OSS-CRS glue ---
 COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh

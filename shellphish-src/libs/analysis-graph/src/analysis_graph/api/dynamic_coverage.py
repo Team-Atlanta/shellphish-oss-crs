@@ -1,6 +1,7 @@
 
 import hashlib
-import logging 
+import logging
+import os
 
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
@@ -147,13 +148,17 @@ def register_grammar_function_coverage(harness_info_id: str, harness_info: Harne
     covered_func_keys = {x[0] for x in covered_lines}
 
     cfg_function = None
-    
+
     try:
         # First, upload the CFGFunction nodes if they do not exist (this races with covguy)
         for k in covered_func_keys:
             try:
                 with db.write_transaction as tx:
-                    cfg_function = CFGFunction.nodes.get_or_none(identifier=k)
+                    # [OSS-CRS glue] In OSSCRS, concurrent components (ag-init, coverage-guy,
+                    # Grammar-Guy) may create duplicate CFGFunction nodes with the same identifier.
+                    # get_or_none() raises MultipleNodesReturned on duplicates; first_or_none() doesn't.
+                    _osscrs = os.environ.get("OSSCRS_INTEGRATION_MODE")
+                    cfg_function = CFGFunction.nodes.first_or_none(identifier=k) if _osscrs else CFGFunction.nodes.get_or_none(identifier=k)
                     if cfg_function is None:
                         # We have to create it!
                         try:
@@ -165,10 +170,6 @@ def register_grammar_function_coverage(harness_info_id: str, harness_info: Harne
                             logger.warning("********************************************************")
                             logger.warning(e)
                             logger.warning("********************************************************")
-                            # All right, somebody push this function in the meantime, we can just ignore this
-                            # NOTE: this transaction is automatically rolled back from neomodel
-                            # NOTE: you cannot use the context of this transaction to retry the creation of the node
-                            #       it will throw an error!
                             cfg_function = None
             except Exception as e:
                 logger.warning("********************************************************")
@@ -182,7 +183,7 @@ def register_grammar_function_coverage(harness_info_id: str, harness_info: Harne
                     if cfg_function is None:
                         # If we got an UniqueProperty error,
                         # we need to fetch the node again...
-                        cfg_function = CFGFunction.nodes.get_or_none(identifier=k)
+                        cfg_function = CFGFunction.nodes.first_or_none(identifier=k) if _osscrs else CFGFunction.nodes.get_or_none(identifier=k)
 
                     # NOTE: using raw query because neomodel is dumb and creates a cartesian product
                     #       if I don't specify myself the ids.
@@ -194,7 +195,7 @@ def register_grammar_function_coverage(harness_info_id: str, harness_info: Harne
                     MERGE (g)-[r:COVERS]->(cf)
                     RETURN r
                     """
-                    
+
                     assert(cfg_function is not None), f"Failed to find CFGFunction for identifier {k}. This should not happen."
 
                     db.cypher_query(query)

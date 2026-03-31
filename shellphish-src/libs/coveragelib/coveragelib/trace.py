@@ -306,8 +306,8 @@ class Tracer:
 
     def __start_background_tracer(self):
         if os.environ.get("OSSCRS_INTEGRATION_MODE"):
-            # [OSS-CRS glue] The buddy tracer runs as an independent run-module;
-            # nothing to start here.
+            # [OSS-CRS glue] The buddy tracer runs as an external run-module container
+            # (coverage_tracer). It shares the same covlib workdir via OSSCRS_COVLIB_WORKDIR.
             self.buddy_tracer_is_running = True
             return
 
@@ -646,28 +646,28 @@ class Tracer:
         if len(seeds) == 0:
             self.__unlock_tracer()
             raise ValueError("You must provide at least one seed to trace!")
-        print(f"Tracing {len(seeds)} seeds | aggregate_mode={self.aggregate}")
+        print(f"Tracing {len(seeds)} seeds | aggregate_mode={self.aggregate} | queue={self.covlib_queue_folder_at}")
 
         # Sanity check1: Make sure the seeds are unique
         seed_names = [f'seed-{i}' for i in range(len(seeds))]
 
         log.debug("Seeds: %s, Seed names: %s", seeds, seed_names)
-        for i, seed in enumerate(seeds):
-            # Sanity check2: Make sure every seed is a file
-            if not os.path.isfile(seed):
-                l.critical("[CRITICAL] The seed %s is not a file. Aborting", seed)
-                self.__unlock_tracer()
-                raise ValueError
-            # Copying it in the queue. This queue is monitored by the watchdog
-            # in coverage fast and used as a single-seed corpus to collect
-            # coverage information.
-            log.debug("Copying seed %s to %s/seed-%s", seed, self.covlib_queue_folder_at, i)
-            # Copy the seed in the folder monitored by the oss-fuzz-coverage_live
-            shutil.copy(seed, Path(self.covlib_queue_folder_at) / f'seed-{i}')
-            # Copy the seed also in the queue backup (so we can do diagnostic later if something goes wrong)
-            # shutil.copy(seed, Path(self.queue_backup_folder) / f'seed-{i}')
-            # Store a reference of the current seed we are working on
-            self.curr_seeds.append(Path(self.queue_backup_folder) / f'seed-{i}')
+        _osscrs_mode = os.environ.get("OSSCRS_INTEGRATION_MODE")
+        def _copy_seeds():
+            for i, seed in enumerate(seeds):
+                if not os.path.isfile(seed):
+                    l.critical("[CRITICAL] The seed %s is not a file. Aborting", seed)
+                    self.__unlock_tracer()
+                    raise ValueError
+                log.debug("Copying seed %s to %s/seed-%s", seed, self.covlib_queue_folder_at, i)
+                shutil.copy(seed, Path(self.covlib_queue_folder_at) / f'seed-{i}')
+                self.curr_seeds.append(Path(self.queue_backup_folder) / f'seed-{i}')
+
+        # [OSS-CRS glue] In OSSCRS mode, defer seed copy until after PollingObserver starts.
+        # The external oss-fuzz-coverage_live is always running and would process seeds
+        # before the observer can detect the done-file.
+        if not _osscrs_mode:
+            _copy_seeds()
 
         if not self.aggregate:
             # Now start to monitor the results folder for the coverage files
@@ -691,6 +691,16 @@ class Tracer:
         #       This will ensure that the actual file containing the results have been completely written on disk before accessing it.
         self.observer.schedule(self.covlib_res_monitor, self.covlib_done_files_at, recursive=False)
         self.observer.start()
+
+        # [OSS-CRS glue] Clean stale results + copy seeds AFTER observer is watching.
+        if _osscrs_mode:
+            for stale_dir in [self.covlib_done_files_at, self.covlib_results_at]:
+                if os.path.isdir(stale_dir):
+                    for f in os.listdir(stale_dir):
+                        fp = os.path.join(stale_dir, f)
+                        if os.path.isfile(fp) and not f.startswith('.oss-fuzz-coverage_live'):
+                            os.remove(fp)
+            _copy_seeds()
 
         # create the trigger for the coverage script
         # THIS MUST BE DONE AFTER STARTING THE POLLING OBSERVER

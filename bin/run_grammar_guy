@@ -4,14 +4,22 @@
 set -eu
 
 HARNESS="${OSS_CRS_TARGET_HARNESS}"
-INSTANCE_ID="gg"
 SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
 echo "=== Grammar-Guy starting: harness=$HARNESS ==="
 
 # --- Download build outputs ---
-COV_TARGET="${SHARED}/coverage-build-${INSTANCE_ID}"
+# Grammar-Guy downloads its own copy of coverage build (separate from external tracer)
+# but shares the covlib workdir with external tracer for seed/result exchange.
+COV_TARGET="${SHARED}/coverage-build-gg"
 mkdir -p "$COV_TARGET"
 libCRS download-build-output build-coverage "$COV_TARGET"
+# Set up /out symlink for oss-fuzz-coverage_live (needs coverage binaries at /out/)
+export OUT="$COV_TARGET/artifacts/out"
+ln -sfn "$OUT" /out 2>/dev/null || true
+# Prepend $OUT to PATH so coverage build's LLVM tools (matching profraw version) take priority
+export PATH="$OUT:$PATH"
+# oss-fuzz-coverage_live needs /corpus/$HARNESS and /out/dumps
+mkdir -p "/corpus/$HARNESS" /out/dumps
 
 FUNC_INDEX_DIR="/tmp/func-index"
 mkdir -p "$FUNC_INDEX_DIR"
@@ -44,9 +52,9 @@ sys.exit(1)
 echo "Found project_harness_metadata_id: $PHM_ID"
 
 # --- Set up covlib workdir ---
-# Must match coverage_tracer_guy's workdir so the buddy tracer picks up seeds
-# coverage_tracer_guy uses TRACER_INSTANCE_ID=guy → $SHARED/coverage-build-guy
-COVLIB_WORKDIR="${SHARED}/coverage-build-guy/artifacts/work/covlib"
+# Share with external coverage_tracer (TRACER_INSTANCE_ID=grammar) so its
+# oss-fuzz-coverage_live processes Grammar-Guy's seeds in the runner environment.
+COVLIB_WORKDIR="${SHARED}/coverage-build-grammar/artifacts/work/covlib"
 mkdir -p "$COVLIB_WORKDIR"
 # Remove stale lock
 rm -f "$COV_TARGET/artifacts/out/.covlib_tracer_locked"
@@ -96,3 +104,6 @@ python -u /shellphish/grammar_guy/src/grammar_guy/gg/antique.py \
     -s "/tmp/gg-events" \
     --events-dir "/tmp/gg-events" \
     2>&1 | tee "$LOGFILE"
+
+# Stay alive — oss-crs uses --abort-on-container-exit
+exec sleep infinity

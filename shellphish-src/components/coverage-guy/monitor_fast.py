@@ -96,8 +96,11 @@ class Config:
         self.with_permanence: bool = False
         self.recover_tracer_crashes: bool = False
         self.max_batch_size: int = 10
-        self.num_db_uploaders: int = 4 if not self.is_local_run else 0
-        self.num_coverage_processors: int = 4
+        # [OSS-CRS glue] LOCAL_RUN=True gives LocalFunctionResolver but sets uploaders=0.
+        # In OSSCRS we still need Neo4j writes, and only have 1 external coverage_tracer buddy.
+        _osscrs = os.environ.get("OSSCRS_INTEGRATION_MODE")
+        self.num_db_uploaders: int = 4 if (not self.is_local_run or _osscrs) else 0
+        self.num_coverage_processors: int = 1 if _osscrs else 4
         self.max_upload_queue_size: int = 100
         self.parser: dict = {
             LanguageEnum.c: C_LineCoverageParser_LLVMCovHTML,

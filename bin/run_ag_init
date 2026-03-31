@@ -30,6 +30,18 @@ export LITELLM_KEY="${LITELLM_KEY:-dummy-ag-init}"
 export AIXCC_LITELLM_HOSTNAME="${AIXCC_LITELLM_HOSTNAME:-${OSS_CRS_LLM_API_URL:-http://localhost:4001}}"
 export USE_LLM_API=1
 
+# Wait for CodeQL server to have the database ready (race: upload_db is async)
+CODEQL_URL="${CODEQL_SERVER_URL:-http://codeql-server.crs-shellphish:4000}"
+echo "Waiting for CodeQL server database to be ready..."
+for i in $(seq 1 30); do
+    if curl -s "$CODEQL_URL/health" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 5
+done
+# Extra wait for async DB extraction to complete
+sleep 15
+
 echo "=== Running callgraph analysis ==="
 cd /shellphish/codeql/callgraph
 timeout 60m python3 analysis_query.py 2>&1 || echo "WARNING: Callgraph analysis had errors (non-fatal)"
