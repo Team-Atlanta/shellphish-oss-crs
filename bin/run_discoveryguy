@@ -194,3 +194,6 @@ python -u run.py \
     --crash_metadata_dir_pass_to_pov "$CRASH_DIR" \
     ${CODEQL_DB_ZIP:+--codeql_db_path "$CODEQL_DB_ZIP"} \
     2>&1 | tee /tmp/discoveryguy_run.log
+
+# Stay alive — oss-crs uses --abort-on-container-exit
+exec sleep infinity

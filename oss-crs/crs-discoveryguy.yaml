@@ -17,6 +17,15 @@ target_build_phase:
       FUZZING_ENGINE: libfuzzer
       BUILD_OUTPUT_NAME: build-canonical
 
+  # AFL++ build (for fuzzing DiscoveryGuy-generated seeds)
+  - name: aflpp-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
+    outputs:
+      - build-aflpp
+    additional_env:
+      FUZZING_ENGINE: shellphish_aflpp
+      BUILD_OUTPUT_NAME: build-aflpp
+
   # CodeQL build (creates database)
   - name: codeql-build
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.builder
@@ -94,6 +103,11 @@ crs_run_phase:
       ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-discoveryguy:7687"
       CODEQL_SERVER_URL: "http://codeql-server.crs-shellphish-discoveryguy:4000"
       FUZZING_LANGUAGE: "c"
+  # AFL++ fuzzer: consumes DiscoveryGuy's LLM-generated seeds from fuzzer_sync,
+  # submits PoVs (crashes) and seeds via libCRS
+  aflpp_fuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
+
   discoveryguy:
     dockerfile: shellphish-src/components/discoveryguy/Dockerfile
     additional_env:

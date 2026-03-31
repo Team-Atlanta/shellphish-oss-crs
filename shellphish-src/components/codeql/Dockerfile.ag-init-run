@@ -1,5 +1,20 @@
 # [OSS-CRS glue] AG init run module.
-# Reuses codeql-analysis build image (has CodeQL CLI + callgraph code + analysis-graph libs).
-# Overrides CMD to run_ag_init (queries CodeQL server -> writes Neo4j).
-FROM crs-shellphish-discoveryguy-codeql-analysis:latest
+# Same image as codeql-analysis build step (has CodeQL CLI + callgraph code + analysis-graph libs),
+# but CMD overridden to run_ag_init (queries CodeQL server -> writes callgraph to Neo4j).
+# Built from source (not FROM build step image) to avoid compose-project-specific image name dependency.
+ARG IMAGE_PREFIX=
+FROM ${IMAGE_PREFIX}aixcc-component-base
+
+ARG CODEQL_VERSION="2.22.0"
+RUN wget -qO- "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_VERSION}/codeql-bundle-linux64.tar.gz" | tar -zxvf - -C /usr/local
+ENV PATH=/usr/local/codeql:$PATH
+
+# [OSS-CRS glue] COPY path: build context is shellphish-oss-crs/
+COPY shellphish-src/components/codeql /shellphish/codeql
+
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_ag_init /usr/local/bin/run_ag_init
+RUN chmod +x /usr/local/bin/run_ag_init
+
 CMD ["run_ag_init"]

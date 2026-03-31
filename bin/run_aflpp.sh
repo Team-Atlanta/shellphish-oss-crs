@@ -137,4 +137,8 @@ done
 collect_crashes_and_seeds
 
 wait || true
-echo "AFL++ fuzzer(s) exited."
+echo "ERROR: AFL++ fuzzer(s) exited unexpectedly."
+# Do NOT sleep infinity here — AFL++ should never exit on its own
+# (no AFL_EXIT_WHEN_DONE set). If it exits, something is wrong
+# (e.g., missing harness binary) and the pipeline should stop.
+exit 1

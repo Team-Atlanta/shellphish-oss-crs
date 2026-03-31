@@ -4,8 +4,9 @@
 #
 # CRS_PIPELINE_MODE controls allocation strategy:
 #   fuzzers (default) — split cores evenly between AFL++ and LibFuzzer
-#   discoveryguy      — no fuzzer cores needed, all cores available for general use
-#   aijon             — all fuzzer cores go to AFL++ (AIJON uses AFL++/IJON only)
+#   grammar           — most cores to AFL++, 1-2 for other components
+#   discoveryguy      — same as grammar (AFL++ consumes DG-generated seeds)
+#   aijon             — AIJON half, coverage 1, AFL++ rest
 set -euo pipefail
 
 ALLOC_FILE="/OSS_CRS_SHARED_DIR/cpu_allocation"
@@ -50,14 +51,6 @@ echo "=== Entrypoint: CPU Allocation (mode=$MODE) ==="
 echo "Available cores: $CPUSET ($TOTAL total)"
 
 case "$MODE" in
-    discoveryguy)
-        # DiscoveryGuy is LLM-driven, does not run fuzzers — no core pinning needed.
-        # Write a valid allocation file so other containers that wait for it don't hang,
-        # but the values are unused. DiscoveryGuy runs on all available cores unbound.
-        AFLPP_CPUS=""
-        LIBFUZZER_CPUS=""
-        echo "Mode: discoveryguy — skipping fuzzer core allocation (no fuzzers in this pipeline)"
-        ;;
     aijon)
         # AIJON pipeline: AIJON fuzzer (half) + coverage tracer (1) + AFL++ (rest).
         # Minimum 3 cores required.
@@ -73,6 +66,45 @@ case "$MODE" in
         AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
         LIBFUZZER_CPUS=""
         echo "Mode: aijon — AIJON: ${AIJON_CPUS} (${#AIJON_CORES[@]} cores), coverage: ${CORES[$HALF]}, AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores)"
+        ;;
+    grammar)
+        # Grammar pipeline: AFL++ is the only fuzzer. Other components (Grammar-Guy,
+        # Roomba, coverage tracers, neo4j) are I/O bound or bursty — share a small
+        # set of cores. Give the rest to AFL++.
+        # Minimum 2 cores: 1 AFL++ + 1 shared.
+        if [ "$TOTAL" -lt 2 ]; then
+            echo "ERROR: Grammar pipeline requires at least 2 cores, got $TOTAL"
+            exit 1
+        fi
+        if [ "$TOTAL" -lt 4 ]; then
+            SHARED=1
+        else
+            SHARED=2
+        fi
+        AFLPP_CORES=("${CORES[@]:0:$((TOTAL - SHARED))}")
+        AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
+        LIBFUZZER_CPUS=""
+        SHARED_CORES=("${CORES[@]:$((TOTAL - SHARED))}")
+        echo "Mode: grammar — AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores), shared (tracers/neo4j/LLM): $(join_cores "${SHARED_CORES[@]}") ($SHARED cores)"
+        ;;
+    discoveryguy)
+        # DiscoveryGuy pipeline: AFL++ consumes DG-generated seeds. DiscoveryGuy
+        # itself is LLM-driven (I/O bound). Same allocation as grammar.
+        # Minimum 2 cores: 1 AFL++ + 1 shared.
+        if [ "$TOTAL" -lt 2 ]; then
+            echo "ERROR: DiscoveryGuy pipeline requires at least 2 cores, got $TOTAL"
+            exit 1
+        fi
+        if [ "$TOTAL" -lt 4 ]; then
+            SHARED=1
+        else
+            SHARED=2
+        fi
+        AFLPP_CORES=("${CORES[@]:0:$((TOTAL - SHARED))}")
+        AFLPP_CPUS=$(join_cores "${AFLPP_CORES[@]}")
+        LIBFUZZER_CPUS=""
+        SHARED_CORES=("${CORES[@]:$((TOTAL - SHARED))}")
+        echo "Mode: discoveryguy — AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores), shared (neo4j/LLM): $(join_cores "${SHARED_CORES[@]}") ($SHARED cores)"
         ;;
     *)
         # Default: split evenly between AFL++ and LibFuzzer

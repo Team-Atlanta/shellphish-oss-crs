@@ -28,6 +28,12 @@ fi
 
 # --- Start CodeQL server ---
 echo "Starting CodeQL server..."
+# CodeQL server hardcodes /shared/codeql_server/ for database storage
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+if [ "$SHARED" != "/shared" ]; then
+    rm -rf /shared 2>/dev/null || true
+    ln -sfn "$SHARED" /shared
+fi
 mkdir -p /shared/codeql_server
 codeql-server --host 0.0.0.0 --port 4000 &
 SERVER_PID=$!

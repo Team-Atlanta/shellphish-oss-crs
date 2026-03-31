@@ -6,10 +6,11 @@ Shellphish DiscoveryGuy: LLM-driven vulnerability discovery pipeline.
 
 ```mermaid
 graph TD
-    subgraph "Build Phase (9 steps)"
+    subgraph "Build Phase (10 steps)"
         CB[canonical-build] --> TI[target-identifier]
         CB --> CI[clang-indexer]
         CB --> CQL[codeql-build]
+        AB[aflpp-build]
         TI --> CS[config-splitter]
         CI --> FI[func-index-gen]
         CB --> SEM[semgrep]
@@ -19,11 +20,12 @@ graph TD
         CQA --> SW
     end
 
-    subgraph "Run Phase (5 containers)"
+    subgraph "Run Phase (6 containers)"
         EP[entrypoint<br/>mode=discoveryguy]
         NEO[neo4j]
         CQLS[codeql-server<br/>CodeQL HTTP service]
         AGI[ag-init<br/>callgraph → Neo4j]
+        AFL[aflpp_fuzzer<br/>consumes DG seeds]
         DG[discoveryguy<br/>LLM analysis + crash verification]
 
         CQA -->|DB zip| CQLS
@@ -41,7 +43,9 @@ graph TD
 
         DG -->|reads| NEO
         DG -->|CodeQlSkill queries| CQLS
+        DG -->|seeds to fuzzer_sync| AFL
         DG -->|PoVs| SUB[SUBMIT_DIR]
+        AFL -->|PoVs + seeds| SUB
     end
 ```
 
@@ -65,10 +69,11 @@ graph TD
 
 | Module | Dockerfile | Entry Point | Description |
 |--------|-----------|-------------|-------------|
-| entrypoint | `oss-crs-entrypoint/Dockerfile` | `run_entrypoint.sh` | CPU allocation (mode=discoveryguy, no fuzzer cores) |
+| entrypoint | `oss-crs-entrypoint/Dockerfile` | `run_entrypoint.sh` | CPU allocation (mode=discoveryguy: most cores to AFL++) |
 | neo4j | `neo4j/Dockerfile` | neo4j default | Graph database for callgraph + dedup |
 | codeql-server | `services/codeql_server/Dockerfile` | `run_codeql_server` | CodeQL HTTP server for ag-init + CodeQlSkill |
 | ag-init | `components/codeql/Dockerfile.ag-init-run` | `run_ag_init` | Runs analysis_query.py → populates Neo4j with callgraph data |
+| aflpp_fuzzer | `aflpp/Dockerfile.runner` | `run_aflpp.sh` | AFL++ fuzzer, consumes DG-generated seeds + submits PoVs/seeds |
 | discoveryguy | `discoveryguy/Dockerfile` | `run_discoveryguy` | LLM vulnerability analysis + crash verification |
 
 ## CRS Configuration
@@ -169,7 +174,9 @@ Replaces Docker-in-Docker (DinD) with local subprocess execution. When `OSSCRS_I
 
 ## CPU Core Allocation
 
-`CRS_PIPELINE_MODE=discoveryguy`: No fuzzer core allocation. DiscoveryGuy is LLM-driven, runs unbound on all available cores. Allocation file written with empty values so other containers don't hang.
+`CRS_PIPELINE_MODE=discoveryguy`: Most cores to AFL++, 1-2 for shared (DiscoveryGuy + infra).
+With 6 cores: AFL++ gets 4 (cores 2-5), shared gets 2 (cores 6-7).
+DiscoveryGuy is LLM-driven (I/O bound), doesn't need dedicated cores.
 
 ## Output Directory Structure
 
@@ -199,25 +206,52 @@ runs/{run-id}/
 ## Verification Checklist
 
 ### Build Phase
-1. **All 9 build steps succeed** — check oss-crs build-target output
+1. **All 10 build steps succeed** — check oss-crs build-target output (includes aflpp-build)
 2. **codeql-analysis output** — `codeql-analysis/` has `codeql-cwe-report.json` + `sss-codeql-database.zip`
 3. **code-swipe CodeqlCWE filter** — `code-swipe.log` shows `Registering filter pass: CodeqlCWE` + `Running filter: CodeqlCWE`
 4. **code-swipe ranking** — `ranking.yaml` has functions with weights
 
-### Run Phase
-5. **Entrypoint** — log shows `mode=discoveryguy`
-6. **Neo4j** — log shows `Started`
-7. **CodeQL server** — `CodeQL server ready` + `Database uploaded successfully`
-8. **AG init** — `PYTHON exiting (analysis graphql v2.0)` + `AG Init complete`
-9. **DiscoveryGuy sync** — `AG init done.` + `Neo4j connected.`
-10. **AG data available** — `🚰👍 N harnesses can reach this sink`
-11. **LLM analysis** — `Starting jimmyPwn with claude-sonnet-4-6`
-12. **Crash verification** — `💣->💥? Running crashing input`
-13. **PoV submission** — `👹 We crashed` + files in SUBMIT_DIR/povs/
-14. **Seed distribution** — `🫳🌱 Dropping seed into all the fuzzing queues`
+### Run Phase — Infrastructure
+5. **6 containers running** — `docker ps | grep discoveryguy | wc -l` → 6
+6. **Entrypoint CPU** — `AFLPP_CPUS=N` (N > 0) in entrypoint log
+7. **Neo4j** — log shows `Started`
+8. **CodeQL server** — `CodeQL server ready` + `Database uploaded successfully`
+9. **AG init** — `PYTHON exiting (analysis graphql v2.0)` + `AG Init complete`
+10. **Neo4j data** — `MATCH (f:CFGFunction) RETURN count(f)` > 0
+
+### Run Phase — AFL++
+11. **AFL++ fuzzing** — `Fuzzing test case` in aflpp_fuzzer log
+12. **AFL++ crashes** — `N crashes saved` (N > 0)
+13. **PoV submission** — `libCRS register-submit-dir pov` in aflpp log
+14. **Seed submission** — `libCRS submit seed` in aflpp log
+
+### Run Phase — DiscoveryGuy
+15. **DiscoveryGuy sync** — `AG init done.` + `Neo4j connected.`
+16. **LLM analysis** — `Starting jimmyPwn` or `Inferencing with`
+17. **Crash verification** — `💣->💥? Running crashing input`
+18. **Crash confirmed** — `👹 We crashed the target`
+19. **Seeds to AFL++** — `Copying seed from ... to /shared/fuzzer_sync/`
+20. **PoV to povguy** — `Passing crashing seed to povguy`
+
+### Intermediate Data
+
+| Data | Validation Command | Expected |
+|------|--------------------|----------|
+| CFGFunction | `cypher-shell "MATCH (f:CFGFunction) RETURN count(f)"` | > 0 |
+| DIRECTLY_CALLS | `cypher-shell "MATCH ()-[r:DIRECTLY_CALLS]->() RETURN count(r)"` | > 0 |
+| DG seeds in fuzzer_sync | `find /shared/fuzzer_sync -name "id:*" \| wc -l` | > 0 |
+| PoVs in crash dir | `ls /tmp/povs/` | crash files present |
+| AFL++ test cases | AFL++ log `N total` | growing |
+
+### Verified Results (clean build after docker system prune)
+
+| Target | Infra (5-10) | AFL++ (11-14) | DG (15-20) | Key Metrics |
+|--------|-------------|---------------|------------|-------------|
+| sanity-mock-c-delta-01 | ✅ 6/6 | ✅ 4/4 | ✅ 6/6 | CFGFunc 4, crash confirmed, 4 seeds to AFL++, PoV submitted |
 
 ## Known Limitations
 
 - **DiscoveryGuy vuln reports not fed back to code-swipe**: Original system runs code-swipe after DiscoveryGuy. In our pipeline, code-swipe runs first (build phase). This is a single-pass limitation.
 - **AG init timing**: ag-init takes ~90s (CodeQL server startup + queries). DiscoveryGuy waits up to 300s for `ag_init_done` signal. If ag-init fails, DiscoveryGuy continues without callgraph data (graceful degradation).
 - **LLM budget**: External LiteLLM server has global budget limits. Monitor `💸 discoveryguy current cost` in logs.
+- **No coverage_tracer**: DiscoveryGuy pipeline doesn't need coverage tracing. AFL++ is for fuzzing DG-generated seeds, not for coverage-guided grammar refinement.
