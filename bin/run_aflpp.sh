@@ -66,6 +66,9 @@ export AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1
 echo core > /proc/sys/kernel/core_pattern 2>/dev/null || true
 sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
 
+# Disable LeakSanitizer: leak detections are not actionable as PoVs.
+export ASAN_OPTIONS="${ASAN_OPTIONS:+${ASAN_OPTIONS}:}detect_leaks=0"
+
 mkdir -p "$ARTIPHISHELL_FUZZER_SYNC_DIR" "$ARTIPHISHELL_INTER_HARNESS_SYNC_DIR"
 
 # --- Launch AFL++ instances ---

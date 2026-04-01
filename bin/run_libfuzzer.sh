@@ -66,6 +66,11 @@ export ARTIPHISHELL_LIBFUZZER_FUZZING_LOG="/tmp/fuzzer.log"
 echo core > /proc/sys/kernel/core_pattern 2>/dev/null || true
 sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
 
+# Disable LeakSanitizer: leak "crashes" have no crashing input data, producing
+# 0-byte artifact files that cannot be submitted as PoVs. Real crashes (SEGV,
+# heap-overflow, etc.) are unaffected.
+export ASAN_OPTIONS="${ASAN_OPTIONS:+${ASAN_OPTIONS}:}detect_leaks=0"
+
 # --- Background: seed sharing monitor ---
 # Periodically copy LibFuzzer corpus to seed submit dir and import fetched seeds
 (
@@ -94,6 +99,10 @@ sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true
 ) &
 
 # --- Launch LibFuzzer ---
+# The harness binary is symlinked to wrapper.py (set up during build by
+# compile_shellphish_libfuzzer). wrapper.py calls harness.instrumented with
+# fork mode. wrapper.py reads ARTIPHISHELL_LIBFUZZER_CRASHING_SEEDS for the
+# crash directory and sets artifact_prefix accordingly.
 IFS=',' read -ra CORES <<< "$LIBFUZZER_CPUS"
 NUM_CORES=${#CORES[@]}
 CPUSET_RANGE="${CORES[0]}"
