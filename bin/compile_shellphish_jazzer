@@ -1,0 +1,41 @@
+#!/bin/bash
+# OSS-CRS glue: Jazzer build entry point.
+# Compiles Java target with Jazzer, sets up wrapper.py for jazzer_driver
+# (replicates symlink_patch logic), submits build output via libCRS.
+set -uo pipefail
+source "$(dirname "$0")/shellphish_build_helpers.sh"
+
+setup_ccache
+compile; RETCODE=$?
+run_post_build_commands "$OUT"
+
+# Jazzer wrapper.py setup (from symlink_patch).
+# IMPORTANT: Unlike C/libfuzzer, we do NOT replace harness scripts with wrapper.py.
+# Java harness scripts (e.g. OssFuzz1) call jazzer_driver with --target_class, --cp, etc.
+# We only replace jazzer_driver with wrapper.py. wrapper.py receives those args and
+# forwards them to the real jazzer_driver at $OUT/shellphish/.../jazzer_driver.
+if [ -f /shellphish/wrapper.py ]; then
+    echo "OSS-CRS: installing Jazzer wrapper.py"
+    cp /shellphish/wrapper.py "$OUT/wrapper.py"
+    chmod +x "$OUT/wrapper.py"
+
+    # Copy original jazzer binaries to expected deep paths (wrapper.py reads LOSAN_JAZZER_*)
+    mkdir -p "$OUT/shellphish/jazzer-aixcc/jazzer-build/"
+    mkdir -p "$OUT/shellphish/nautilus/"
+    cp "$SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver" "$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver"
+    cp "$SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar" "$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar"
+    cp "$SRC/shellphish/nautilus/librevolver_mutator.so" "$OUT/shellphish/nautilus/librevolver_mutator.so" 2>/dev/null || true
+    cp "$SRC/shellphish/nautilus/watchtower" "$OUT/shellphish/nautilus/watchtower" 2>/dev/null || true
+
+    # Replace jazzer_driver with wrapper.py symlink (original saved as .orig)
+    if [ -f "$OUT/jazzer_driver" ]; then
+        mv "$OUT/jazzer_driver" "$OUT/jazzer_driver.orig"
+        ln -s "$OUT/wrapper.py" "$OUT/jazzer_driver"
+    fi
+    if [ -f "$OUT/jazzer_agent_deploy.jar" ]; then
+        mv "$OUT/jazzer_agent_deploy.jar" "$OUT/jazzer_agent_deploy.jar.orig"
+    fi
+fi
+
+libCRS submit-build-output "$OUT" "${BUILD_OUTPUT_NAME:-build-jazzer}"
+exit $RETCODE

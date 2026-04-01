@@ -1,9 +1,9 @@
-ARG BASE_IMAGE=
+ARG BASE_IMAGE=ghcr.io/aixcc-finals/base-runner:v1.3.0
 FROM ${BASE_IMAGE} AS jazzer_patch_build
 
 
 RUN apt-get update && apt-get install -y software-properties-common
-RUN apt-get update && apt-get install -y jq rsync openssh-client curl build-essential python3-dev psmisc 
+RUN apt-get update && apt-get install -y jq rsync openssh-client curl build-essential python3-dev psmisc
 RUN pip3 install pyyaml requests pydantic rich
 
 RUN mkdir -p /shellphish
@@ -14,14 +14,21 @@ ENV LOSAN_JAZZER_AGENT_JAR=$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_agen
 ENV LOSAN_JAZZER_DRIVER=$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver
 
 
-COPY jazzer_fuzzing_configs.yaml /shellphish/jazzer_fuzzing_configs.yaml
-COPY minimize_corpus_and_same_node_sync.sh /shellphish/minimize_corpus_and_same_node_sync.sh
-COPY instrumentation_and_strings.py /shellphish/instrumentation_and_strings.py
-COPY auto_kill.sh /shellphish/auto_kill.sh
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/jazzer_fuzzing_configs.yaml /shellphish/jazzer_fuzzing_configs.yaml
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/minimize_corpus_and_same_node_sync.sh /shellphish/minimize_corpus_and_same_node_sync.sh
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/instrumentation_and_strings.py /shellphish/instrumentation_and_strings.py
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/auto_kill.sh /shellphish/auto_kill.sh
 RUN echo '{}' > /shellphish/packages_in_scope.json
 
 # TODO: move this to prebuild and use wheels to install
-COPY libcodeql /shellphish/libs/libcodeql
+COPY shellphish-src/libs/libcodeql /shellphish/libs/libcodeql
 RUN pip3 install -e /shellphish/libs/libcodeql
-COPY crs-utils /shellphish/libs/crs-utils
+COPY shellphish-src/libs/crs-utils /shellphish/libs/crs-utils
 RUN pip3 install -e /shellphish/libs/crs-utils
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/run_jazzer.sh /usr/local/bin/run_jazzer.sh
+RUN chmod +x /usr/local/bin/run_jazzer.sh
+ENTRYPOINT ["/usr/local/bin/run_jazzer.sh"]
