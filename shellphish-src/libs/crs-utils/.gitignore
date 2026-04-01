@@ -17,6 +17,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!**/libfuzzer-jazzer/compiler-rt/lib/
 lib64/
 parts/
 sdist/
