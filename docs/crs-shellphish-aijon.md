@@ -1,197 +1,125 @@
 # crs-shellphish-aijon
 
-Shellphish AIJON: LLM-driven IJON instrumentation + AFL++ fuzzing pipeline.
+LLM-driven IJON instrumentation + AFL++ fuzzing.
 
-AIJON uses an LLM to analyze target code and insert IJON feedback annotations (e.g. `IJON_CMP`, `IJON_MAX`) that guide AFL++ toward hard-to-reach code paths. It runs alongside standard AFL++ and a coverage tracer.
+AIJON uses an LLM to analyze target code and insert IJON feedback annotations (e.g. `IJON_CMP`, `IJON_MAX`) that guide AFL++ toward hard-to-reach code paths.
 
 ## Architecture
 
 ```mermaid
-graph TD
-    subgraph "Build Phase (11 steps)"
-        CB[canonical-build] --> TI[target-identifier]
-        CB --> CI[clang-indexer]
-        CB --> CQL[codeql-build]
+graph LR
+    subgraph Build
+        CB[canonical-build] --> SW[code-swipe]
         CB --> AB[aflpp-build]
         CB --> COV[coverage-build]
-        TI --> CS[config-splitter]
-        CI --> FI[func-index-gen]
-        CB --> SEM[semgrep]
-        CQL --> CQA[codeql-analysis<br/>CWE report + DB zip]
-        FI --> SW[code-swipe]
-        SEM --> SW
-        CQA --> SW
+        CQL[codeql] --> CQA[codeql-analysis] --> SW
+        CI[clang-indexer] --> FI[func-index] --> SW
+        SEM[semgrep] --> SW
     end
 
-    subgraph "Run Phase (8 containers)"
-        EP[entrypoint<br/>mode=aijon]
+    subgraph Run
+        EP[entrypoint] -->|cpu_allocation| AFL[aflpp_fuzzer]
+        EP -->|cpu_allocation| FZ[aijon_fuzzer]
+        AB -->|build-aflpp| AFL
 
-        NEO[neo4j]
-        CQLS[codeql-server]
-        AGI[ag-init<br/>callgraph → Neo4j]
-
-        AI[aijon_instrumentation<br/>LLM → IJON patch]
-        BLD[aijon_builder<br/>compile IJON binary]
-        FZ[aijon_fuzzer<br/>AFL++/IJON multi-instance]
-        AFL[aflpp_fuzzer<br/>standard AFL++ multi-instance]
-        CT[coverage_tracer<br/>coverage → Neo4j]
-
-        CQLS -->|queries| AGI
-        AGI -->|writes| NEO
-        AGI -->|ag_init_done| AI
-
+        AGI[ag-init] -->|Neo4j + ag_init_done| AI[aijon_instr]
         SW -->|ranking| AI
         CB -->|source| AI
-        AI -->|patch| BLD
+        AI -->|patch + allowlist| BLD[aijon_builder]
         BLD -->|binary| FZ
 
-        AB -->|build-aflpp| AFL
-        COV -->|build-coverage| CT
-        CT -->|seeds| NEO
+        COV -->|build-coverage| CT[coverage_tracer]
+        CT --> NEO[neo4j]
     end
 ```
 
-## Components
+**Sequential AIJON chain:** ag-init → aijon_instrumentation → aijon_builder → aijon_fuzzer
 
-### Build Phase
+**Parallel:** aflpp_fuzzer starts immediately (no AIJON dependency).
 
-| Step | Dockerfile | Output | Description |
-|------|-----------|--------|-------------|
-| canonical-build | `shellphish_libfuzzer/Dockerfile.builder` | `build-canonical` | Compile target, preserve source |
-| codeql-build | `codeql/Dockerfile.builder` | `codeql-db` | Create CodeQL database |
-| aflpp-build | `aflpp/Dockerfile.builder` | `build-aflpp` | AFL++ compiled harnesses |
-| coverage-build | `coverage_fast/Dockerfile.builder.c` | `build-coverage` | Coverage-instrumented build |
-| clang-indexer-build | `clang_indexer/Dockerfile.builder` | `clang-index` | Function JSON extraction |
-| target-identifier | `target-identifier/Dockerfile` | `augmented-metadata` | Project metadata |
-| config-splitter | `configuration-splitter/Dockerfile` | `split-metadata` | Build config splitting |
-| func-index-gen | `function-index-generator/Dockerfile` | `func-index` | Function index |
-| semgrep-analysis | `semgrep/Dockerfile` | `semgrep-report` | Static analysis |
-| codeql-analysis | `components/codeql/Dockerfile` | `codeql-analysis` | CWE report (CLI) + DB zip |
-| code-swipe | `code-swipe/Dockerfile` | `code-swipe-ranking` | Function vulnerability ranking |
+## Data Flow
 
-### Run Phase
+### Build Outputs → Run Consumers
 
-| Module | Dockerfile | Entry Point | Description |
-|--------|-----------|-------------|-------------|
-| entrypoint | `oss-crs-entrypoint/Dockerfile` | `run_entrypoint.sh` | CPU allocation (mode=aijon: AIJON N cores, coverage 1, AFL++ rest, min 3) |
-| neo4j | `neo4j/Dockerfile` | neo4j default | Graph database |
-| codeql-server | `services/codeql_server/Dockerfile` | `run_codeql_server` | CodeQL HTTP server |
-| ag-init | `components/codeql/Dockerfile.ag-init-run` | `run_ag_init` | analysis_query.py → Neo4j callgraph data |
-| aijon_instrumentation | `components/aijon/Dockerfile` | `run_aijon_instrumentation` | LLM generates IJON patch from code-swipe POIs |
-| aijon_builder | `oss-crs/Dockerfile.aijon-builder` | `run_aijon_builder` | Applies patch, compiles with AFL++/IJON, LLM fixer loop on failure |
-| aijon_fuzzer | `oss-crs/Dockerfile.aijon-fuzzer` | `run_aijon_fuzzer` | Multi-instance AFL++/IJON fuzzing (afl-fuzz++4.30c-ijon) |
-| aflpp_fuzzer | `aflpp/Dockerfile.runner` | `run_aflpp.sh` | Standard AFL++ multi-instance fuzzing (runs immediately, no AIJON dependency) |
-| coverage_tracer | `coverage_fast/Dockerfile.runner.c` | coverage script | Monitors seeds, runs coverage, writes HarnessInputNode to Neo4j |
+| Build Output | Consumers | Content |
+|-------------|-----------|---------|
+| `build-canonical` | aijon_instrumentation, discoveryguy | Source at `.shellphish_src/`, metadata |
+| `build-aflpp` | aflpp_fuzzer | AFL++ harness binaries |
+| `build-coverage` | coverage_tracer | Coverage-instrumented binary |
+| `code-swipe-ranking` | aijon_instrumentation | POI functions ranked by vulnerability likelihood |
+| `func-index` | aijon_instrumentation | Function index JSON |
+| `clang-index` | aijon_instrumentation | Function body JSONs |
+| `codeql-analysis` | codeql-server | CodeQL DB zip for server |
 
-## CRS Configuration
+### Shared Directory (`SHARED_DIR`)
 
-- **CRS name:** `crs-shellphish-aijon`
-- **Config:** `oss-crs/crs-aijon.yaml`
-- **Example compose:** `oss-crs/example/crs-shellphish-aijon/compose.yaml`
+| Path | Writer | Reader | Purpose |
+|------|--------|--------|---------|
+| `cpu_allocation` | entrypoint | aflpp_fuzzer, aijon_fuzzer | Core assignment |
+| `ag_init_done` | ag-init | aijon_instrumentation | Signal: Neo4j ready |
+| `aijon_artifacts/aijon_instrumentation.patch` | aijon_instrumentation | aijon_builder | IJON patch |
+| `aijon_artifacts/aijon_allowlist.txt` | aijon_instrumentation | aijon_builder | AFL++ allowlist |
+| `aijon_artifacts/.done` | aijon_instrumentation | aijon_builder | Signal: patch ready |
+| `aijon_build/` | aijon_builder | aijon_fuzzer | Compiled IJON binary |
+| `fuzzer_sync/{project}-{harness}-0/` | aflpp_fuzzer, aijon_fuzzer | (external) | Queue + crashes |
 
-### Deployment
+### Synchronization
+
+```
+entrypoint ──cpu_allocation──→ aflpp_fuzzer (starts immediately)
+                           ──→ aijon_fuzzer (waits for build too)
+
+codeql-server ──ready──→ ag-init ──ag_init_done──→ aijon_instrumentation
+                                                          │
+                                               patch + allowlist + .done
+                                                          ↓
+                                                    aijon_builder
+                                                          │
+                                                    compiled binary
+                                                          ↓
+                                                    aijon_fuzzer
+```
+
+## CPU Allocation
+
+`CRS_PIPELINE_MODE=aijon` — AIJON gets half cores, coverage 1, AFL++ rest (min 3 total).
+
+| Component | Cores (6 available) |
+|-----------|-------------------|
+| AIJON fuzzer | 2,3,4 |
+| Coverage tracer | 5 |
+| AFL++ | 6,7 |
+
+## Source Path Resolution
+
+`aijon_instrumentation` reads `source_repo_path` from `shellphish_build_metadata.yaml` to find the project directory in `.shellphish_src/`. Example: `source_repo_path: /src/nginx` → uses `.shellphish_src/nginx/` as `--target_source`.
+
+## Configuration
 
 ```bash
-# In shellphish-oss-crs:
 cp oss-crs/crs-aijon.yaml oss-crs/crs.yaml
-
-# In oss-crs:
+cd /project/oss-crs
 export AIXCC_LITELLM_HOSTNAME=<litellm-url>
 export LITELLM_KEY=<api-key>
-uv run oss-crs prepare --compose-file example/crs-shellphish-aijon/compose.yaml
-uv run oss-crs build-target --compose-file example/crs-shellphish-aijon/compose.yaml \
-  --fuzz-proj-path <target> --target-source-path <source>
 uv run oss-crs run --compose-file example/crs-shellphish-aijon/compose.yaml \
   --fuzz-proj-path <target> --target-source-path <source> \
   --target-harness <harness> --timeout 1800
 ```
 
-## Run Phase Flow
+## Verification
 
-### Startup (parallel)
-
-All containers start simultaneously. Dependencies resolved by waiting:
-
-1. **entrypoint** writes `cpu_allocation` → aflpp_fuzzer and aijon_fuzzer wait for this
-2. **codeql-server** starts, uploads DB → ag-init queries it (CodeQLClient retries)
-3. **ag-init** writes Neo4j + `ag_init_done` signal → aijon_instrumentation waits for this
-4. **aflpp_fuzzer** starts immediately after cpu_allocation (no AIJON dependency)
-
-### AIJON Chain (sequential)
-
-```
-ag-init completes → ag_init_done signal
-    ↓
-aijon_instrumentation: downloads build outputs, locates source,
-    reads code-swipe ranking, runs AIJON main.py with LLM
-    → generates IJON patch (e.g. IJON_CMP, IJON_MAX annotations)
-    → writes patch + allowlist to SHARED_DIR/aijon_artifacts/.done
-    ↓
-aijon_builder: waits for .done, reads patch, applies to /src/,
-    compiles with AFL++/IJON compiler. If compile fails, runs
-    LLM fixer loop. Outputs binary to SHARED_DIR/aijon_build/
-    ↓
-aijon_fuzzer: waits for build output + cpu_allocation,
-    launches N instances of afl-fuzz++4.30c-ijon (main + secondaries)
-```
-
-### Synchronization
-
-| Signal | Writer | Waiter | Mechanism |
-|--------|--------|--------|-----------|
-| `cpu_allocation` | entrypoint | aflpp_fuzzer, aijon_fuzzer | File in SHARED_DIR |
-| `ag_init_done` | ag-init | aijon_instrumentation | File in SHARED_DIR (max 300s wait) |
-| `aijon_artifacts/.done` | aijon_instrumentation | aijon_builder | File in SHARED_DIR |
-| `aijon_build/` contents | aijon_builder | aijon_fuzzer | Directory polling |
-| CodeQL server ready | codeql-server | ag-init | CodeQLClient exponential backoff |
-
-## CPU Core Allocation
-
-`CRS_PIPELINE_MODE=aijon`: AIJON gets half the cores, coverage tracer gets 1, AFL++ gets the rest. Minimum 3 cores total.
-
-Example with 6 cores (2-7):
-- AIJON: cores 2,3,4 (3 cores)
-- Coverage: core 5 (1 core)
-- AFL++: cores 6,7 (2 cores)
-
-## IJON Patch Example (mock-c)
-
-LLM-generated IJON annotations for `process_input_header`:
-
-```diff
- void process_input_header(const uint8_t *data, size_t size) {
-   char buf[0x40];
-+IJON_CMP((unsigned long long)data[0], (unsigned long long)'A');
-   if (size > 0 && data[0] == 'A')
-       memcpy(buf, data, size);
-+IJON_MAX((unsigned long long)size);
- }
-```
-
-- `IJON_CMP`: guides fuzzer to discover that `data[0]` must equal `'A'`
-- `IJON_MAX`: guides fuzzer to maximize `size` to trigger the buffer overflow
-
-## Verification Checklist
-
-### Build Phase
-1. **All 11 build steps succeed** — check oss-crs build-target output
-2. **aflpp-build** — harness binary exists in build-aflpp output
-3. **codeql-analysis** — `codeql-cwe-report.json` + `sss-codeql-database.zip`
-4. **code-swipe ranking** — `ranking.yaml` has functions with weights
-
-### Run Phase
-5. **Entrypoint** — `mode=aijon`, CPU split shown
-6. **Neo4j** — `Started`
-7. **CodeQL server** — `CodeQL server ready` + `Database uploaded successfully`
-8. **AG init** — `Query returned N functions` + `PYTHON exiting`
-9. **AIJON instrumentation** — `AG init done` + `Running AIJON instrumentation`
-10. **AIJON builder** — `Patch found` + compilation output
-11. **AIJON fuzzer** — `afl-fuzz++4.30c-ijon` running with allocated cores
-12. **AFL++ fuzzer** — Standard AFL++ running in parallel
-13. **Coverage tracer** — `Seed feeder started`
+| Check | Evidence | Expected |
+|-------|----------|----------|
+| AIJON instrumentation | `🎊 AIJON instrumentation succeeded` | Patch + allowlist generated |
+| Source path | `Source subdir from build metadata: {project}` | Matches target project |
+| AIJON builder | `Compilation succeeded` | Binary in `aijon_build/` |
+| AIJON fuzzer | `afl-fuzz` running with IJON binary | Crashes found on mock |
+| AFL++ parallel | `Fuzzing test case` in aflpp log | Running independently |
+| ag-init | `PYTHON exiting (analysis graphql v2.0)` | CFGFunction nodes in Neo4j |
+| PoVs/seeds | EXCHANGE_DIR | Non-empty |
 
 ## Known Limitations
 
-- **AG init timing**: For large projects (e.g. nginx, 14240 functions), CodeQL queries take several minutes. AIJON instrumentation waits up to 300s. If AG init doesn't complete, AIJON proceeds without callgraph data (degraded).
-- **AIJON builder compile failures**: If the IJON-patched source doesn't compile, the LLM fixer loop retries. If all retries fail, AIJON fuzzer never starts (standard AFL++ still runs).
-- **Single IJON pass**: AIJON instrumentation generates one patch and exits (same as original system). Retries up to 10 times if instrumentation fails (empty allowlist), with 10-minute intervals.
+- AIJON generates one patch per run. Retries up to 10× on failure (10-min intervals).
+- ag-init timeout: 300s max wait. Large targets (nginx: 14k functions) need several minutes.
+- AIJON builder LLM fixer loop: if patched source doesn't compile, retries with LLM. If all fail, only standard AFL++ runs.

@@ -1,343 +1,102 @@
 # crs-shellphish-c-fuzzers
 
-Shellphish C/C++ fuzzing pipeline: AFL++ and LibFuzzer in parallel ensemble.
+AFL++ and LibFuzzer in parallel ensemble.
 
 ## Architecture
 
 ```mermaid
-graph TD
-    subgraph "Build Phase"
-        TB[target_base_image<br/>FROM base-builder:v1.3.0<br/>+ source overlay]
-        AB[aflpp-build<br/>Dockerfile.builder<br/>FUZZING_ENGINE=shellphish_aflpp]
-        LB[libfuzzer-build<br/>Dockerfile.builder<br/>FUZZING_ENGINE=libfuzzer]
-        TB --> AB
-        TB --> LB
-        AB -->|build-aflpp| BO_AFL[/out: harness binaries<br/>+ AFL++ tools/]
-        LB -->|build-libfuzzer| BO_LF[/out: harness binaries<br/>+ libfuzzer wrapper/]
+graph LR
+    subgraph Build
+        TB[target_base_image] --> AB[aflpp-build]
+        TB --> LB[libfuzzer-build]
     end
 
-    subgraph "Run Phase"
-        EP[entrypoint<br/>mode=fuzzers<br/>CPU split: half/half]
-        AFL[aflpp_fuzzer<br/>Dockerfile.runner<br/>base-runner:v1.3.0]
-        LF[libfuzzer<br/>Dockerfile.runner<br/>base-runner:v1.3.0]
-
-        EP -->|AFLPP_CPUS<br/>LIBFUZZER_CPUS| AFL
-        EP -->|AFLPP_CPUS<br/>LIBFUZZER_CPUS| LF
-
-        BO_AFL -->|libCRS download| AFL
-        BO_LF -->|libCRS download| LF
-
-        AFL -->|crashes + seeds| SD[SHARED_DIR<br/>fuzzer_sync/]
-        LF -->|crashes + seeds| SD
-
-        AFL -->|libCRS register-submit-dir pov| SUB[SUBMIT_DIR]
-        LF -->|libCRS register-submit-dir pov| SUB
-        AFL -->|libCRS submit seed| SUB
-        LF -->|libCRS submit seed| SUB
-
-        EX[exchange sidecar] -->|copy| EXDIR[EXCHANGE_DIR]
-        SUB --> EX
+    subgraph Run
+        EP[entrypoint] -->|cpu_allocation| AFL[aflpp_fuzzer]
+        EP -->|cpu_allocation| LF[libfuzzer]
+        AB -->|build-aflpp| AFL
+        LB -->|build-libfuzzer| LF
+        AFL -->|PoVs + seeds| EX[exchange]
+        LF -->|PoVs + seeds| EX
     end
 ```
 
-## Components
+## Data Flow
 
-### Build Phase
+### Build Outputs
 
-| Step | Dockerfile | Output | Description |
-|------|-----------|--------|-------------|
-| aflpp-build | `instrumentation/aflpp/Dockerfile.builder` | `build-aflpp` | Compile target with AFL++ `afl-clang-fast` |
-| libfuzzer-build | `instrumentation/shellphish_libfuzzer/Dockerfile.builder` | `build-libfuzzer` | Compile target with modified libfuzzer |
+| Build Step | Output Name | Consumers | Content |
+|-----------|-------------|-----------|---------|
+| aflpp-build | `build-aflpp` | aflpp_fuzzer | Harness binaries (afl-clang-fast) + AFL++ tools |
+| libfuzzer-build | `build-libfuzzer` | libfuzzer | Harness binaries (libfuzzer) + wrapper.py |
 
-### Run Phase
+### Shared Directory (`SHARED_DIR`)
 
-| Module | Dockerfile | Entry Point | Description |
-|--------|-----------|-------------|-------------|
-| entrypoint | `oss-crs-entrypoint/Dockerfile` | `run_entrypoint.sh` | CPU core allocation (mode=fuzzers) |
-| aflpp_fuzzer | `instrumentation/aflpp/Dockerfile.runner` | `run_aflpp.sh` | Multi-instance AFL++ fuzzing |
-| libfuzzer | `instrumentation/shellphish_libfuzzer/Dockerfile.runner` | `run_libfuzzer.sh` | Fork-mode LibFuzzer fuzzing |
+| Path | Writer | Reader | Purpose |
+|------|--------|--------|---------|
+| `cpu_allocation` | entrypoint | aflpp_fuzzer, libfuzzer | `AFLPP_CPUS=2,3,4` / `LIBFUZZER_CPUS=5,6,7` |
+| `fuzzer_sync/{project}-{harness}-0/` | AFL++ | (external components) | AFL++ queue + crashes |
+| `fuzzer_sync/.../libfuzzer-minimized/queue/` | libfuzzer | (external components) | LibFuzzer minimized corpus |
 
-## CRS Configuration
+### External I/O (via libCRS)
 
-- **CRS name:** `crs-shellphish-c-fuzzers`
-- **File:** `oss-crs/crs-c-fuzzers.yaml`
-- **Registry:** `oss-crs/registry/crs-shellphish-c-fuzzers.yaml`
-- **Example compose:** `oss-crs/example/crs-shellphish-c-fuzzers/compose.yaml`
+| Direction | Mechanism | Content |
+|-----------|-----------|---------|
+| PoV out | `libCRS register-submit-dir pov /tmp/povs/` | Crash inputs → EXCHANGE_DIR/povs/ |
+| Seed out | `libCRS submit seed <file>` | Interesting inputs → EXCHANGE_DIR/seeds/ |
+| Seed in | `libCRS register-fetch-dir seed /tmp/seeds_from_other_crs/` | From other CRS |
 
-### Deployment
+## CPU Allocation
 
-```bash
-# In shellphish-oss-crs:
-cp oss-crs/crs-c-fuzzers.yaml oss-crs/crs.yaml
+`CRS_PIPELINE_MODE=fuzzers` — even split between AFL++ and LibFuzzer.
 
-# In oss-crs:
-uv run oss-crs prepare --compose-file example/crs-shellphish-c-fuzzers/compose.yaml
-uv run oss-crs build-target --compose-file example/crs-shellphish-c-fuzzers/compose.yaml \
-  --fuzz-proj-path <target> --target-source-path <source>
-uv run oss-crs run --compose-file example/crs-shellphish-c-fuzzers/compose.yaml \
-  --fuzz-proj-path <target> --target-source-path <source> \
-  --target-harness <harness> --timeout 300
-```
+| Component | Cores (6 available) |
+|-----------|-------------------|
+| AFL++ | 2,3,4 (3 instances: main + 2 secondary) |
+| LibFuzzer | 5,6,7 (fork=3) |
 
-## CPU Core Allocation
+## Run Phase Details
 
-Entrypoint `CRS_PIPELINE_MODE=fuzzers` splits available cores evenly:
+### AFL++ (`run_aflpp.sh`)
 
-| Component | Cores (8-core example) | Mechanism |
-|-----------|----------------------|-----------|
-| oss_crs_infra | 0-1 | compose.yaml `cpuset` |
-| AFL++ | 2,3,4 | `AFLPP_CPUS` from entrypoint, `taskset -c` per instance |
-| LibFuzzer | 5,6,7 | `LIBFUZZER_CPUS` from entrypoint, `taskset -c` + `-fork=N` |
-
-Entrypoint reads cgroup cpuset, parses available cores, writes `/OSS_CRS_SHARED_DIR/cpu_allocation`:
-```
-AFLPP_CPUS=2,3,4
-LIBFUZZER_CPUS=5,6,7
-```
-
-Both fuzzers wait for this file at startup.
-
-## Prepare Phase (Prebuild)
-
-`docker-bake.hcl` builds prebuild images in prepare phase:
-
-| Image | Source | Content |
-|-------|--------|---------|
-| `crs-aflpp-prebuild` | `aflpp/Dockerfile.prebuild` | AFL++ v4.30c + Nautilus grammar mutator |
-| `crs-libfuzzer-prebuild` | `shellphish_libfuzzer/Dockerfile.prebuild` | Modified libfuzzer with Shellphish patches |
-
-Builder Dockerfiles use `COPY --from=prebuild` to get pre-compiled fuzzer tools without rebuilding each time.
-
-## Build Phase
-
-Both build steps use `target_base_image` (target source + build deps) as base, overlaying fuzzer tools from prebuild. Outputs are transferred to run phase via `libCRS submit-build-output` / `libCRS download-build-output`.
-
-### aflpp-build
-
-- **Dockerfile:** `instrumentation/aflpp/Dockerfile.builder`
-- **Base:** `FROM ${target_base_image}` (target source + deps) + `FROM prebuild` (AFL++ v4.30c)
-- **Output:** `build-aflpp` — harness binaries compiled with `afl-clang-fast`, AFL++ tools (`afl-fuzz`, etc.)
-- **Entry point:** `compile_aflpp_build` — `compile` → `post_build_commands` → `libCRS submit`
-
-### libfuzzer-build
-
-- **Dockerfile:** `instrumentation/shellphish_libfuzzer/Dockerfile.builder`
-- **Base:** `FROM ${target_base_image}` + `FROM prebuild` (modified libfuzzer)
-- **Output:** `build-libfuzzer` — harness binaries compiled with libfuzzer instrumentation + `wrapper.py`
-- **Entry point:** `compile_shellphish_libfuzzer` — `compile` → `post_build_commands` → `libCRS submit`
-
-## Run Phase
-
-### AFL++ Fuzzer (`run_aflpp.sh`)
-
-**Dockerfile:** `instrumentation/aflpp/Dockerfile.runner`
-- `FROM base-runner:v1.3.0`
-- Shellphish's `run_fuzzer` script + libCRS + glue entry point
-
-**Ensemble strategy:**
-- 1 main instance + (N-1) secondary instances, one per core
-- Each pinned via `taskset -c $CORE`
-- Main: deterministic mutations, timeout 5000ms
-- Secondaries: randomized strategies per Shellphish's `run_fuzzer`:
-  - Varying timeouts (500-2000ms)
-  - Random cmplog, dictionary, corpus shuffling
-  - Nautilus grammar mutator (if available)
-- All instances share output dir (`-o fuzzer_sync/{project}-{harness}-0/`)
-- AFL++ built-in sync: main imports from secondaries every ~5s (`SHELLPHISH: sync`)
-
-**Crash collection:**
-```
-fuzzer_sync/main/crashes/id:*      ─┐
-fuzzer_sync/secondary_*/crashes/id:* ─┤ collect_crashes_and_seeds() every 5s
-                                      ↓
-                              /tmp/povs/{hash}
-                                      ↓
-                    libCRS register-submit-dir pov (watchdog)
-                                      ↓
-                              SUBMIT_DIR/povs/
-```
-
-**Seed sharing (outbound):**
-```
-fuzzer_sync/main/queue/id:*
-        ↓ collect loop, deduplicated via /tmp/.seeds_submitted/
-  libCRS submit seed
-        ↓
-  SUBMIT_DIR/seeds/ → exchange sidecar → EXCHANGE_DIR/seeds/
-```
-
-**Seed sharing (inbound):**
-```
-  Other CRS → FETCH_DIR/seeds/
-        ↓ libCRS register-fetch-dir seed (watchdog, polls every 5s)
-  /tmp/seeds_from_other_crs/
-        ↓ collect loop
-  /tmp/foreign_fuzzer/queue/
-        ↓ AFL++ -F /tmp/foreign_fuzzer
-  AFL++ imports into fuzzing corpus
-```
+- 1 main + (N-1) secondary instances, each pinned via `taskset`
+- Shellphish's `run_fuzzer` handles strategy randomization (timeout, cmplog, dict, Nautilus)
+- Crash monitor loop: copies `fuzzer_sync/*/crashes/id:*` → `/tmp/povs/`
+- Seed sharing: submits `main/queue/id:*` via libCRS
 
 ### LibFuzzer (`run_libfuzzer.sh`)
 
-**Dockerfile:** `instrumentation/shellphish_libfuzzer/Dockerfile.runner`
-- `FROM base-runner:v1.3.0`
-- Shellphish's `wrapper.py` (symlinked as harness) + libCRS + glue entry point
+- Harness is symlinked to `wrapper.py` (set up during build)
+- `wrapper.py` calls `harness.instrumented` with `fork=N`, `artifact_prefix=/tmp/libfuzzer_crashes/`
+- Crash files written directly by fork workers
+- Seed sharing: background loop submits `libfuzzer-minimized/queue/*` via libCRS
 
-**Ensemble strategy:**
-- Single process with `-fork=N` (N = number of allocated cores)
-- Pinned to core range via `taskset -c $CORES`
-- `wrapper.py` manages corpus, minimization, and reload
-- `-reload=200`: re-reads all corpus directories every 200s
-- Additional corpus dirs: corpusguy, grammar-guy, grammaroomba, discoguy, sync-oss-crs-external (for future component integration)
-- `-use_value_profile=1`: coverage + value profile feedback
+### Sanitizer Settings
 
-**Crash collection:**
-```
-  wrapper.py -artifact_prefix=/tmp/libfuzzer_crashes/
-        ↓ direct write by fork workers
-  /tmp/libfuzzer_crashes/{crash_hash}
-        ↓ libCRS register-submit-dir pov (watchdog)
-  SUBMIT_DIR/povs/
+LeakSanitizer is disabled (`detect_leaks=0`) in all fuzzer containers. Leak detections have no crashing input data and produce 0-byte artifact files that cannot be submitted as PoVs.
+
+## Configuration
+
+```bash
+cp oss-crs/crs-c-fuzzers.yaml oss-crs/crs.yaml
+cd /project/oss-crs
+uv run oss-crs run --compose-file example/crs-shellphish-c-fuzzers/compose.yaml \
+  --fuzz-proj-path <target> --target-source-path <source> \
+  --target-harness <harness> --timeout 1800
 ```
 
-**Seed sharing (outbound):**
-```
-  wrapper.py minimizes corpus →
-  fuzzer_sync/.../libfuzzer-minimized/queue/*
-        ↓ background loop every 10s, deduplicated
-  libCRS submit seed
-        ↓
-  SUBMIT_DIR/seeds/
-```
+## Verification
 
-**Seed sharing (inbound):**
-```
-  Other CRS → FETCH_DIR/seeds/
-        ↓ libCRS register-fetch-dir seed (watchdog)
-  /tmp/seeds_from_other_crs/
-        ↓ background loop every 10s
-  fuzzer_sync/.../sync-oss-crs-external/queue/
-        ↓ wrapper.py -reload=200
-  LibFuzzer imports into fuzzing corpus
-```
-
-## OSS-CRS Framework Integration
-
-### Data Flow: CRS ↔ Framework
-
-```mermaid
-graph LR
-    subgraph "CRS Container"
-        F[Fuzzer] -->|write| POV_DIR[/tmp/povs/]
-        F -->|write| SEED_Q[fuzzer_sync/queue/]
-        POV_DIR -->|watchdog| SUBMIT_POV[SUBMIT_DIR/povs/]
-        SEED_Q -->|loop| SUBMIT_SEED[SUBMIT_DIR/seeds/]
-        FETCH[/tmp/seeds_from_other_crs/] -->|import| F
-    end
-
-    subgraph "OSS-CRS Framework"
-        EX[exchange sidecar]
-        SUBMIT_POV --> EX
-        SUBMIT_SEED --> EX
-        EX --> EXCHANGE[EXCHANGE_DIR]
-        EXCHANGE -->|other CRS reads| FETCH_OTHER[Other CRS FETCH_DIR]
-        FETCH_OTHER2[Other CRS EXCHANGE_DIR] -->|this CRS reads| FETCH
-    end
-```
-
-### Volume Mounts (per container)
-
-| Container path | Host path | Mode | Purpose |
-|---------------|-----------|------|---------|
-| `/OSS_CRS_BUILD_OUT_DIR` | `builds/.../BUILD_OUT_DIR` | ro | Build step outputs |
-| `/OSS_CRS_SUBMIT_DIR` | `runs/.../SUBMIT_DIR` | rw | PoV/seed submission |
-| `/OSS_CRS_SHARED_DIR` | `runs/.../SHARED_DIR` | rw | Inter-container shared data |
-| `/OSS_CRS_LOG_DIR` | `runs/.../LOG_DIR` | rw | Logs (unused) |
-| `/OSS_CRS_FETCH_DIR` | Other CRS's EXCHANGE_DIR | ro | Inbound seeds from other CRS |
-
-## Output Directory Structure
-
-```
-runs/cfuzzers-final-01-{hash}/
-├── EXCHANGE_DIR/{target}_{hash}/{harness}/
-│   ├── povs/            ← exchange sidecar copies from SUBMIT_DIR
-│   └── seeds/           ← exchange sidecar copies from SUBMIT_DIR
-├── crs/crs-shellphish-c-fuzzers/{target}_{hash}/
-│   ├── SUBMIT_DIR/{harness}/
-│   │   ├── povs/        ← libCRS watchdog writes here
-│   │   └── seeds/       ← libCRS submit writes here
-│   ├── SHARED_DIR/{harness}/
-│   │   ├── cpu_allocation          ← entrypoint writes
-│   │   └── fuzzer_sync/{project}-{harness}-0/
-│   │       ├── main/queue/         ← AFL++ main instance
-│   │       ├── main/crashes/       ← AFL++ crashes
-│   │       ├── secondary_*/        ← AFL++ secondary instances
-│   │       ├── libfuzzer-minimized/queue/  ← LibFuzzer corpus
-│   │       └── sync-oss-crs-external/queue/ ← inbound external seeds
-│   └── LOG_DIR/         ← unused
-└── logs/{target}_{hash}/{harness}/
-    ├── crs/crs-shellphish-c-fuzzers/
-    │   ├── *_entrypoint.stdout.log
-    │   ├── *_aflpp_fuzzer.stdout.log
-    │   └── *_libfuzzer.stdout.log
-    └── services/
-        └── oss-crs-exchange.stdout.log
-```
-
-## Verification Checklist
-
-After a run, verify each point with specific evidence:
-
-### 0. Prepare phase
-**Command:** `docker images | grep crs-`
-**Check:** `crs-aflpp-prebuild:latest` and `crs-libfuzzer-prebuild:latest` exist.
-
-### 1. Entrypoint CPU allocation
-**Log:** `*_entrypoint.stdout.log`
-**Check:** `mode=fuzzers`, `AFLPP_CPUS=` and `LIBFUZZER_CPUS=` are non-overlapping and match compose cpuset.
-
-### 2. AFL++ multi-instance
-**Log:** `*_aflpp_fuzzer.stdout.log`
-**Check:** `Starting AFL++ instance 'main' on core X` + `secondary_N on core Y` for each allocated core.
-
-### 3. AFL++ crash detection
-**Log:** `*_aflpp_fuzzer.stdout.log`
-**Check:** `N crashes saved` where N > 0 (on mock-c, should find crash within seconds).
-
-### 4. AFL++ inter-instance sync
-**Log:** `*_aflpp_fuzzer.stdout.log`
-**Check:** `SHELLPHISH: sync` appearing repeatedly (1000+ times in 120s run).
-
-### 5. LibFuzzer fork mode
-**Log:** `*_libfuzzer.stdout.log`
-**Check:** `fork=N` where N = number of allocated cores. `LIBFUZZER_CPUS=` matches.
-
-### 6. LibFuzzer corpus dirs include external
-**Log:** `*_libfuzzer.stdout.log`
-**Check:** `Adding additional seed directories` list includes `sync-oss-crs-external/queue`.
-
-### 7. PoV files submitted
-**Dir:** `SUBMIT_DIR/{harness}/povs/`
-**Check:** Non-empty. Files are crash inputs (binary data).
-
-### 8. Seeds shared outbound
-**Dir:** `SUBMIT_DIR/{harness}/seeds/` and `EXCHANGE_DIR/{harness}/seeds/`
-**Check:** Both non-empty, same file count. Exchange sidecar copied all.
-
-### 9. Exchange sidecar activity
-**Log:** `oss-crs-exchange.stdout.log`
-**Check:** `copied povs/{hash}` entries showing PoV transfer.
-
-### 10. Seed import path (requires mock injection)
-**Method:** `docker exec <libfuzzer_container> sh -c 'echo TEST > /tmp/seeds_from_other_crs/mock_seed'`, wait 15s.
-**Check:** File appears in `fuzzer_sync/.../sync-oss-crs-external/queue/mock_seed`.
-
-### 11. fuzzer_sync shared data
-**Dir:** `SHARED_DIR/{harness}/fuzzer_sync/{project}-{harness}-0/` (need sudo)
-**Check:** `main/queue/` has AFL++ seeds, `libfuzzer-minimized/queue/` has LibFuzzer seeds.
+| Check | Command / Log | Expected |
+|-------|--------------|----------|
+| CPU allocation | entrypoint log: `AFLPP_CPUS=`, `LIBFUZZER_CPUS=` | Non-overlapping core sets |
+| AFL++ instances | aflpp log: `Starting AFL++ instance` | 1 main + N secondary |
+| AFL++ crashes | aflpp log: `crashes saved` | > 0 on mock target |
+| LibFuzzer fork | libfuzzer log: `fork=N` | N = allocated cores |
+| PoVs submitted | `ls EXCHANGE_DIR/povs/` | Non-empty files |
+| Seeds shared | `ls EXCHANGE_DIR/seeds/` | Non-empty |
 
 ## Known Limitations
 
-- **No intra-CRS AFL++ ↔ LibFuzzer seed sharing:** They write to the same `fuzzer_sync/` dir but don't read each other's queues directly. Sharing between them requires intermediate components (CorpusGuy, Grammar-Guy) not present in this pipeline.
-- **LibFuzzer `-reload=200`:** External seeds are picked up on 200s interval, not immediately.
-- **Seed sharing requires multi-CRS deployment:** `register-fetch-dir` only works when another CRS's EXCHANGE_DIR is mounted as FETCH_DIR. Single CRS deployment has no inbound seeds.
+- No direct AFL++ ↔ LibFuzzer seed sharing (requires intermediate components like CorpusGuy)
+- LibFuzzer `-reload=200`: external seeds picked up every 200s
