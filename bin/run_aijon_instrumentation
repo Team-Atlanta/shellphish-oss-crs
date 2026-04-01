@@ -70,27 +70,22 @@ fi
 echo "Function JSONs dir: $TARGET_FUNCTIONS_JSON_DIR"
 
 # --- Detect source subdirectory ---
-# The function index keys use paths like /src/mock-c/mock.c, with focus_repo_relative_path
-# being just "mock.c". The target_source must point to the directory containing mock.c.
-# Detect source subdir from code-swipe ranking's function_index_key.
-if [ -f "$CODESWIPE_REPORT" ]; then
+# AIJON's main.py expects --target_source to be the project-level source root
+# (e.g., .shellphish_src/nginx/), so that modified_source_dir / focus_repo_relative_path
+# resolves correctly. The canonical build metadata records the source_repo_path
+# (e.g., "/src/nginx"), whose basename is the project directory in .shellphish_src/.
+BUILD_METADATA="$CANONICAL_DIR/artifacts/out/shellphish_build_metadata.yaml"
+if [ -f "$BUILD_METADATA" ]; then
     SRC_SUBDIR=$(python3 -c "
 import yaml, os
-with open('$CODESWIPE_REPORT') as f:
+with open('$BUILD_METADATA') as f:
     data = yaml.safe_load(f)
-for item in data.get('ranking', []):
-    key = item.get('function_index_key', '')
-    fname = item.get('filename', '')
-    path = key.split(':')[0]
-    rel = path.replace('/src/', '', 1)
-    dirname = os.path.dirname(rel)
-    if dirname and dirname != fname:
-        print(dirname)
-        break
+repo_path = data.get('source_repo_path', '')
+print(os.path.basename(repo_path))
 " 2>/dev/null)
     if [ -n "$SRC_SUBDIR" ] && [ -d "$PRESERVED_SOURCE/$SRC_SUBDIR" ]; then
         TARGET_SOURCE="$PRESERVED_SOURCE/$SRC_SUBDIR"
-        echo "Source subdir detected from ranking: $SRC_SUBDIR → $TARGET_SOURCE"
+        echo "Source subdir from build metadata: $SRC_SUBDIR → $TARGET_SOURCE"
     fi
 fi
 
