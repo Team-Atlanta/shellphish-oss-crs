@@ -4,6 +4,8 @@
 #
 # CRS_PIPELINE_MODE controls allocation strategy:
 #   fuzzers (default) — split cores evenly between AFL++ and LibFuzzer
+#   aflpp-only        — all cores to AFL++, no LibFuzzer
+#   libfuzzer-only    — all cores to LibFuzzer, no AFL++
 #   grammar           — most cores to AFL++, 1-2 for other components
 #   discoveryguy      — same as grammar (AFL++ consumes DG-generated seeds)
 #   aijon             — AIJON half, coverage 1, AFL++ rest
@@ -107,6 +109,18 @@ case "$MODE" in
         LIBFUZZER_CPUS=""
         SHARED_CORES=("${CORES[@]:$((TOTAL - SHARED))}")
         echo "Mode: discoveryguy — AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores), shared (neo4j/LLM): $(join_cores "${SHARED_CORES[@]}") ($SHARED cores)"
+        ;;
+    aflpp-only)
+        # AFL++ only pipeline: all cores to AFL++, no LibFuzzer.
+        AFLPP_CPUS="$ALL_CPUS"
+        LIBFUZZER_CPUS=""
+        echo "Mode: aflpp-only — AFL++: ${AFLPP_CPUS} ($TOTAL cores), LibFuzzer: none"
+        ;;
+    libfuzzer-only)
+        # LibFuzzer only pipeline: all cores to LibFuzzer, no AFL++.
+        AFLPP_CPUS=""
+        LIBFUZZER_CPUS="$ALL_CPUS"
+        echo "Mode: libfuzzer-only — LibFuzzer: ${LIBFUZZER_CPUS} ($TOTAL cores), AFL++: none"
         ;;
     jvm-fuzzers)
         # JVM fuzzers pipeline: Jazzer only, no AFL++.
