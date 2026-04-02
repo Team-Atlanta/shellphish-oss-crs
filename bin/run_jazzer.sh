@@ -1,8 +1,14 @@
 #!/bin/bash
 # OSS-CRS glue for Shellphish Jazzer.
 #
-# Downloads build output, sets up wrapper.py environment,
-# launches Jazzer fuzzing via wrapper.py (symlinked as harness).
+# Launches N independent Jazzer single-process instances (one per core),
+# each with its own corpus directory. A background loop syncs corpus between
+# instances into jazzer-minimized/queue/ and submits seeds/PoVs via libCRS.
+#
+# Why not -fork=N: fork mode's parent process can't see Java bytecode
+# coverage (Jazzer agent registers counters in child address space).
+# Result: cov=0, ft=0, corp=0 — pure random mutation, no coverage feedback.
+# Single-process mode lets Jazzer agent feed coverage back to libFuzzer.
 set -eu
 
 # --- Wait for entrypoint module's CPU allocation ---
@@ -62,9 +68,6 @@ libCRS register-submit-dir pov "$CRASH_DIR" &
 libCRS register-fetch-dir seed "$SEED_FETCH_DIR" &
 
 # --- Map OSS-CRS env vars to Jazzer wrapper.py expected env vars ---
-# (Jazzer uses ARTIPHISHELL_JAZZER_* not ARTIPHISHELL_LIBFUZZER_*)
-# jazzer_driver searches for jazzer_standalone.jar in its own directory.
-# The prebuild produces jazzer_agent_deploy.jar. Create symlink so driver finds it.
 JAZZER_BUILD_DIR="$OUT/shellphish/jazzer-aixcc/jazzer-build"
 if [ -f "$JAZZER_BUILD_DIR/jazzer_agent_deploy.jar" ] && [ ! -f "$JAZZER_BUILD_DIR/jazzer_standalone.jar" ]; then
     ln -s "$JAZZER_BUILD_DIR/jazzer_agent_deploy.jar" "$JAZZER_BUILD_DIR/jazzer_standalone.jar"
@@ -85,38 +88,80 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:+${ASAN_OPTIONS}:}detect_leaks=0"
 # Container environment workarounds
 echo core > /proc/sys/kernel/core_pattern 2>/dev/null || true
 
-# --- Background: seed sharing monitor ---
+# --- Per-instance corpus directories ---
+IFS=',' read -ra CORES <<< "$LIBFUZZER_CPUS"
+NUM_CORES=${#CORES[@]}
+
+for i in "${!CORES[@]}"; do
+    mkdir -p "$SYNC_DIR/instance_${i}/queue"
+done
+
+# --- Background: corpus sync + seed sharing + external import ---
 (
     set +e
     while true; do
         sleep 10
-        # Submit interesting corpus to other CRS
-        if [ -d "$SYNC_DIR/jazzer-minimized/queue" ]; then
-            for seed in "$SYNC_DIR/jazzer-minimized/queue"/*; do
+
+        # 1. Sync: copy new corpus from each instance to jazzer-minimized/queue/
+        #    This is the simplified version of minimize_corpus_and_same_node_sync.sh.
+        #    We copy rather than merge — dedup by filename is sufficient for sharing.
+        for idir in "$SYNC_DIR"/instance_*/queue; do
+            [ -d "$idir" ] || continue
+            for seed in "$idir"/*; do
                 [ -f "$seed" ] || continue
                 bn=$(basename "$seed")
-                [ -f "/tmp/.seeds_submitted/$bn" ] && continue
-                libCRS submit seed "$seed" 2>/dev/null || true
-                mkdir -p /tmp/.seeds_submitted
-                touch "/tmp/.seeds_submitted/$bn"
+                [ -f "$SYNC_DIR/jazzer-minimized/queue/$bn" ] || \
+                    cp "$seed" "$SYNC_DIR/jazzer-minimized/queue/$bn" 2>/dev/null || true
             done
-        fi
-        # Import fetched seeds into a sync dir that wrapper.py reads via -reload
+        done
+
+        # 2. Submit seeds from jazzer-minimized to other CRS
+        for seed in "$SYNC_DIR/jazzer-minimized/queue"/*; do
+            [ -f "$seed" ] || continue
+            bn=$(basename "$seed")
+            [ -f "/tmp/.seeds_submitted/$bn" ] && continue
+            libCRS submit seed "$seed" 2>/dev/null || true
+            mkdir -p /tmp/.seeds_submitted
+            touch "/tmp/.seeds_submitted/$bn"
+        done
+
+        # 3. Import fetched seeds into sync-oss-crs-external for all instances to read
         for seed in "$SEED_FETCH_DIR"/*; do
             [ -f "$seed" ] || continue
             bn=$(basename "$seed")
-            mkdir -p "$SYNC_DIR/sync-oss-crs-external/queue"
-            [ -f "$SYNC_DIR/sync-oss-crs-external/queue/$bn" ] || cp "$seed" "$SYNC_DIR/sync-oss-crs-external/queue/$bn" 2>/dev/null || true
+            [ -f "$SYNC_DIR/sync-oss-crs-external/queue/$bn" ] || \
+                cp "$seed" "$SYNC_DIR/sync-oss-crs-external/queue/$bn" 2>/dev/null || true
         done
     done
 ) &
 
-# --- Launch Jazzer ---
-IFS=',' read -ra CORES <<< "$LIBFUZZER_CPUS"
-NUM_CORES=${#CORES[@]}
-CPUSET_RANGE="${CORES[0]}"
-if [ "$NUM_CORES" -gt 1 ]; then
-    CPUSET_RANGE="${CORES[0]}-${CORES[$((NUM_CORES-1))]}"
-fi
-echo "=== Jazzer: $NUM_CORES cores ($LIBFUZZER_CPUS), fork=$NUM_CORES ==="
-exec taskset -c "$CPUSET_RANGE" "$OUT/$HARNESS" "-fork=$NUM_CORES"
+# --- Launch N independent Jazzer instances (single-process, no fork) ---
+echo "=== Jazzer: $NUM_CORES independent instances (cores: $LIBFUZZER_CPUS) ==="
+set +e
+PIDS=""
+
+for i in "${!CORES[@]}"; do
+    CORE=${CORES[$i]}
+    INSTANCE_CORPUS="$SYNC_DIR/instance_${i}/queue"
+
+    echo "Starting Jazzer instance $i on core $CORE (corpus: $INSTANCE_CORPUS)"
+
+    # Each instance gets:
+    #   - Its own corpus dir as first positional arg (libFuzzer writes new findings here)
+    #   - jazzer-minimized/queue/ as shared read corpus (merged from all instances)
+    #   - All sync dirs from other components (QuickSeed, CorpusGuy, etc.)
+    taskset -c "$CORE" "$OUT/$HARNESS" \
+        "$INSTANCE_CORPUS" \
+        "$SYNC_DIR/jazzer-minimized/queue" \
+        "$SYNC_DIR/sync-quickseed/queue" \
+        "$SYNC_DIR/sync-corpusguy/queue" \
+        "$SYNC_DIR/sync-oss-crs-external/queue" &
+    PIDS="$PIDS $!"
+done
+
+# Wait for any instance to exit (shouldn't happen normally)
+wait -n $PIDS 2>/dev/null || true
+
+echo "WARNING: A Jazzer instance exited. Keeping alive for abort-on-container-exit."
+# Stay alive — oss-crs uses --abort-on-container-exit
+exec sleep infinity
