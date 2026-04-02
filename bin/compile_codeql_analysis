@@ -17,9 +17,21 @@ FUNC_INDEX_DIR="/tmp/func-index-input"
 mkdir -p "$FUNC_INDEX_DIR"
 libCRS download-build-output func-index "$FUNC_INDEX_DIR"
 
-CLANG_INDEX_DIR="/tmp/clang-index-input"
-mkdir -p "$CLANG_INDEX_DIR"
-libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+# Language-dependent: function JSON directory source
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    jvm|java)
+        # Java: function JSONs from func-index (antlr4-guy output)
+        FUNC_JSON_DIR="$FUNC_INDEX_DIR"
+        ;;
+    *)
+        # C/C++: function JSONs from clang-indexer output
+        CLANG_INDEX_DIR="/tmp/clang-index-input"
+        mkdir -p "$CLANG_INDEX_DIR"
+        libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+        FUNC_JSON_DIR="$CLANG_INDEX_DIR/full"
+        ;;
+esac
 
 # --- Unzip CodeQL database ---
 DB_PATH="/tmp/codeql-database"
@@ -32,8 +44,7 @@ else
     exit 1
 fi
 
-# --- Detect language ---
-LANG="${FUZZING_LANGUAGE:-c}"
+# --- Detect CodeQL language ---
 case "$LANG" in
     c|c++) QLANG="cpp" ;;
     jvm|java) QLANG="java" ;;
@@ -58,7 +69,7 @@ python3 run_cwe_queries.py \
     --codeql-cwe-report "$OUTPUT_DIR/codeql-cwe-report.json" \
     --language "$LANG" \
     --full-functions-indices "$FUNC_INDEX_DIR/indices.json" \
-    --functions-json-dir "$CLANG_INDEX_DIR/full" \
+    --functions-json-dir "$FUNC_JSON_DIR" \
     --codeql-database-path "$DB_ACTUAL" \
     --skip-analysis-graph \
     2>&1 || echo "WARNING: CWE queries failed (non-fatal)"

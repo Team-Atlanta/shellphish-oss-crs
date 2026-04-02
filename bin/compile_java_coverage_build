@@ -1,0 +1,44 @@
+#!/bin/bash
+# OSS-CRS glue: Java coverage build entry point.
+# Compiles Java target with coverage instrumentation (JaCoCo via Jazzer).
+# Output layout matches OSSFuzzProject expectations for coverage tracing.
+set -uo pipefail
+source "$(dirname "$0")/shellphish_build_helpers.sh"
+
+setup_ccache
+compile; RETCODE=$?
+run_post_build_commands "$OUT"
+
+# Package as OSSFuzzProject layout
+COV_OUT="/tmp/coverage-build"
+mkdir -p "$COV_OUT/artifacts/out" "$COV_OUT/artifacts/docker"
+cp -r "$OUT"/. "$COV_OUT/artifacts/out/"
+
+# Preserve source for coverage analysis
+if [ -d /src ]; then
+    cp -r /src "$COV_OUT/artifacts/out/.shellphish_src"
+    ln -sf out/.shellphish_src "$COV_OUT/artifacts/built_src"
+fi
+
+if [ -d "${OSS_CRS_PROJ_PATH:-}" ]; then
+    cp "$OSS_CRS_PROJ_PATH/Dockerfile" "$COV_OUT/" 2>/dev/null || true
+    cp "$OSS_CRS_PROJ_PATH/project.yaml" "$COV_OUT/" 2>/dev/null || true
+    # [OSS-CRS glue] Remove fields not in Shellphish's OSSFuzzProjectYAML model (extra="forbid")
+    sed -i '/^rts_mode:/d; /^inc_build:/d; /^auto_profile:/d; /^experimental:/d' "$COV_OUT/project.yaml" 2>/dev/null || true
+    if ! grep -q "shellphish_project_name:" "$COV_OUT/project.yaml" 2>/dev/null; then
+        printf '\nshellphish_project_name: %s\n' "${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}" >> "$COV_OUT/project.yaml"
+    fi
+    cp "$OSS_CRS_PROJ_PATH/build.sh" "$COV_OUT/" 2>/dev/null || true
+fi
+
+# Build metadata
+cat > "$COV_OUT/artifacts/out/shellphish_build_metadata.yaml" <<METAEOF
+fuzzing_engine: ${FUZZING_ENGINE:-libfuzzer}
+project_name: ${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}
+sanitizer: coverage
+source_repo_path: "$PWD"
+architecture: ${ARCHITECTURE:-x86_64}
+METAEOF
+
+libCRS submit-build-output "$COV_OUT" "${BUILD_OUTPUT_NAME:-build-coverage}"
+exit $RETCODE

@@ -7,6 +7,8 @@
 #   grammar           — most cores to AFL++, 1-2 for other components
 #   discoveryguy      — same as grammar (AFL++ consumes DG-generated seeds)
 #   aijon             — AIJON half, coverage 1, AFL++ rest
+#   jvm-fuzzers       — all cores to Jazzer (LibFuzzer), no AFL++
+#   quickseed         — most cores to Jazzer, 1-2 shared (QuickSeed/neo4j/LLM)
 set -euo pipefail
 
 ALLOC_FILE="/OSS_CRS_SHARED_DIR/cpu_allocation"
@@ -105,6 +107,32 @@ case "$MODE" in
         LIBFUZZER_CPUS=""
         SHARED_CORES=("${CORES[@]:$((TOTAL - SHARED))}")
         echo "Mode: discoveryguy — AFL++: ${AFLPP_CPUS} (${#AFLPP_CORES[@]} cores), shared (neo4j/LLM): $(join_cores "${SHARED_CORES[@]}") ($SHARED cores)"
+        ;;
+    jvm-fuzzers)
+        # JVM fuzzers pipeline: Jazzer only, no AFL++.
+        # All cores go to Jazzer (LibFuzzer-based, uses fork=N).
+        AFLPP_CPUS=""
+        LIBFUZZER_CPUS="$ALL_CPUS"
+        echo "Mode: jvm-fuzzers — Jazzer (LibFuzzer): ${LIBFUZZER_CPUS} ($TOTAL cores), AFL++: none"
+        ;;
+    quickseed)
+        # QuickSeed pipeline: Jazzer is the only fuzzer. QuickSeed is LLM/IO-bound,
+        # shares 1-2 cores with neo4j/ag-init/codeql-server.
+        # Minimum 2 cores: 1 Jazzer + 1 shared.
+        if [ "$TOTAL" -lt 2 ]; then
+            echo "ERROR: QuickSeed pipeline requires at least 2 cores, got $TOTAL"
+            exit 1
+        fi
+        if [ "$TOTAL" -lt 4 ]; then
+            SHARED=1
+        else
+            SHARED=2
+        fi
+        LIBFUZZER_CORES=("${CORES[@]:0:$((TOTAL - SHARED))}")
+        LIBFUZZER_CPUS=$(join_cores "${LIBFUZZER_CORES[@]}")
+        AFLPP_CPUS=""
+        SHARED_CORES=("${CORES[@]:$((TOTAL - SHARED))}")
+        echo "Mode: quickseed — Jazzer (LibFuzzer): ${LIBFUZZER_CPUS} (${#LIBFUZZER_CORES[@]} cores), shared (QuickSeed/neo4j/LLM): $(join_cores "${SHARED_CORES[@]}") ($SHARED cores)"
         ;;
     *)
         # Default: split evenly between AFL++ and LibFuzzer

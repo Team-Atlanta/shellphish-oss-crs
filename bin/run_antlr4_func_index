@@ -1,0 +1,64 @@
+#!/bin/bash
+# OSS-CRS glue: runs antlr4-guy Java function indexer on canonical build output.
+# Equivalent of clang-indexer + func-index-gen for C, but for Java.
+# Reads: build-canonical (Java source + compiled JARs)
+# Writes: func-index (function indices for downstream: code-swipe, QuickSeed)
+set -euo pipefail
+
+echo "=== antlr4 Function Index starting ==="
+
+# Download canonical build output (contains Java source + artifacts)
+CANONICAL_DIR="/tmp/canonical-input"
+mkdir -p "$CANONICAL_DIR"
+libCRS download-build-output build-canonical "$CANONICAL_DIR"
+
+# antlr4-guy expects an OSSFuzzProject-compatible layout:
+#   --canonical-build-artifact points to a dir with artifacts/out/ (build output)
+#   --project-source points to the source code
+# Our canonical build output already has this structure.
+
+# Source code: preserved at artifacts/out/.shellphish_src by compile_canonical_build_java
+SOURCE_DIR="$CANONICAL_DIR/artifacts/out/.shellphish_src"
+if [ ! -d "$SOURCE_DIR" ]; then
+    SOURCE_DIR="$CANONICAL_DIR/artifacts/out/src"
+fi
+if [ ! -d "$SOURCE_DIR" ]; then
+    echo "WARNING: No Java source found in canonical build, using /src"
+    SOURCE_DIR="/src"
+fi
+echo "Source dir: $SOURCE_DIR"
+
+# antlr4-guy output
+ANTLR_OUTPUT="/tmp/antlr4-output"
+mkdir -p "$ANTLR_OUTPUT"
+
+# Run antlr4-guy (Java AST parser → function JSONs)
+cd /shellphish/antlr4
+python run-java-bottom-up.py \
+    --mode full \
+    --canonical-build-artifact "$CANONICAL_DIR" \
+    --project-source "$SOURCE_DIR" \
+    --output-dir "$ANTLR_OUTPUT"
+
+echo "antlr4-guy output:"
+ls -la "$ANTLR_OUTPUT"
+ls -la "$ANTLR_OUTPUT/METHOD/" 2>/dev/null | head -20 || true
+
+# Run function-index-generator on antlr4 output (same as C pipeline's func-index-gen)
+# This produces indices.json consumed by code-swipe and QuickSeed
+FUNC_INDEX_OUTPUT="/tmp/func-index-output"
+mkdir -p "$FUNC_INDEX_OUTPUT"
+
+python /shellphish/components/function-index-generator/indexer.py \
+    --mode full \
+    --input-target-functions-json-dir "$ANTLR_OUTPUT" \
+    --output-target-functions-index "$FUNC_INDEX_OUTPUT/indices.json" \
+    --output-functions-by-file-index-json "$FUNC_INDEX_OUTPUT/by_file.json"
+
+# Also include the raw function JSONs (code-swipe needs --index-dir-json)
+cp -r "$ANTLR_OUTPUT"/* "$FUNC_INDEX_OUTPUT/" 2>/dev/null || true
+
+echo "=== antlr4 Function Index complete ==="
+ls -la "$FUNC_INDEX_OUTPUT"
+
+libCRS submit-build-output "$FUNC_INDEX_OUTPUT" "${BUILD_OUTPUT_NAME:-func-index}"

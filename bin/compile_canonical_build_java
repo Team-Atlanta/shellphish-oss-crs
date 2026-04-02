@@ -1,0 +1,91 @@
+#!/bin/bash
+# OSS-CRS glue: Java canonical build entry point.
+# Equivalent of compile_canonical_build but for Java/JVM targets.
+# Compiles with Jazzer, preserves source, generates build metadata.
+set -uo pipefail
+source "$(dirname "$0")/shellphish_build_helpers.sh"
+
+setup_ccache
+compile; RETCODE=$?
+run_post_build_commands "$OUT"
+
+# Jazzer wrapper.py setup (same as compile_shellphish_jazzer)
+if [ -f /shellphish/wrapper.py ]; then
+    echo "OSS-CRS: installing Jazzer wrapper.py (canonical)"
+    cp /shellphish/wrapper.py "$OUT/wrapper.py"
+    chmod +x "$OUT/wrapper.py"
+    mkdir -p "$OUT/shellphish/jazzer-aixcc/jazzer-build/"
+    mkdir -p "$OUT/shellphish/nautilus/"
+    cp "$SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver" "$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver"
+    cp "$SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar" "$OUT/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar"
+    cp "$SRC/shellphish/nautilus/librevolver_mutator.so" "$OUT/shellphish/nautilus/librevolver_mutator.so" 2>/dev/null || true
+    cp "$SRC/shellphish/nautilus/watchtower" "$OUT/shellphish/nautilus/watchtower" 2>/dev/null || true
+    if [ -f "$OUT/jazzer_driver" ]; then
+        mv "$OUT/jazzer_driver" "$OUT/jazzer_driver.orig"
+        ln -s "$OUT/wrapper.py" "$OUT/jazzer_driver"
+    fi
+    if [ -f "$OUT/jazzer_agent_deploy.jar" ]; then
+        mv "$OUT/jazzer_agent_deploy.jar" "$OUT/jazzer_agent_deploy.jar.orig"
+    fi
+fi
+
+# Preserve source (canonical_build uses --preserve-built-src-dir)
+cp -r /src "$OUT/.shellphish_src" 2>/dev/null || true
+
+# Package canonical project directory
+CANONICAL_OUT="/tmp/canonical-build"
+mkdir -p "$CANONICAL_OUT/artifacts/out" "$CANONICAL_OUT/artifacts/docker"
+cp -r "$OUT"/. "$CANONICAL_OUT/artifacts/out/"
+if [ -d "${OSS_CRS_PROJ_PATH:-}" ]; then
+    cp "$OSS_CRS_PROJ_PATH/Dockerfile" "$CANONICAL_OUT/" 2>/dev/null || true
+    cp "$OSS_CRS_PROJ_PATH/project.yaml" "$CANONICAL_OUT/" 2>/dev/null || true
+    # [OSS-CRS glue] Remove fields not in Shellphish's OSSFuzzProjectYAML model (extra="forbid")
+    sed -i '/^rts_mode:/d; /^inc_build:/d; /^auto_profile:/d; /^experimental:/d' "$CANONICAL_OUT/project.yaml" 2>/dev/null || true
+    if ! grep -q "shellphish_project_name:" "$CANONICAL_OUT/project.yaml" 2>/dev/null; then
+        printf '\nshellphish_project_name: %s\n' "${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}" >> "$CANONICAL_OUT/project.yaml"
+    fi
+    cp "$OSS_CRS_PROJ_PATH/build.sh" "$CANONICAL_OUT/" 2>/dev/null || true
+fi
+
+# Build harness list for Java (Jazzer harnesses are shell scripts calling jazzer_driver)
+HARNESS_LIST=$(python3 -c "
+import os
+path = '$OUT'
+targets = []
+for f in os.listdir(path):
+    fp = os.path.join(path, f)
+    if not os.path.isfile(fp) or not os.access(fp, os.X_OK):
+        continue
+    _, ext = os.path.splitext(f)
+    if ext not in ['', '.sh']:
+        continue
+    # Skip known non-harness files
+    if f in ('wrapper.py', 'llvm-symbolizer', 'llvm-nm', 'llvm-cov', 'llvm-objcopy'):
+        continue
+    if f.startswith('jazzer_driver') or f.startswith('compile'):
+        continue
+    if f.endswith('.instrumented') or f.endswith('.orig'):
+        continue
+    # Check if it's a harness script (calls jazzer_driver) or an ELF with LLVMFuzzerTestOneInput
+    with open(fp, 'rb') as fh:
+        content = fh.read(4096)
+    if b'jazzer_driver' in content or b'LLVMFuzzerTestOneInput' in content:
+        targets.append(f)
+print(', '.join('\"' + t + '\"' for t in targets))
+" 2>/dev/null || echo "")
+
+# Build metadata (project.py:1158-1169)
+cat > "$CANONICAL_OUT/artifacts/out/shellphish_build_metadata.yaml" <<METAEOF
+fuzzing_engine: ${FUZZING_ENGINE:-libfuzzer}
+project_name: ${OSS_CRS_TARGET:-${PROJECT_NAME:-unknown}}
+sanitizer: ${SANITIZER:-address}
+source_repo_path: "$PWD"
+architecture: ${ARCHITECTURE:-x86_64}
+harnesses: [$HARNESS_LIST]
+METAEOF
+
+echo "=== Java canonical build metadata ==="
+cat "$CANONICAL_OUT/artifacts/out/shellphish_build_metadata.yaml"
+
+libCRS submit-build-output "$CANONICAL_OUT" "${BUILD_OUTPUT_NAME:-build-canonical}"
+exit $RETCODE

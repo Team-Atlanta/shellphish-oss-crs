@@ -21,7 +21,7 @@ crs_run_phase:
   entrypoint:
     dockerfile: oss-crs-entrypoint/Dockerfile
     additional_env:
-      CRS_PIPELINE_MODE: fuzzers
+      CRS_PIPELINE_MODE: jvm-fuzzers
   jazzer_fuzzer:
     dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/Dockerfile.runner
 

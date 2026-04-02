@@ -1,0 +1,278 @@
+#!/bin/bash
+# OSS-CRS glue: QuickSeed run module.
+# LLM-driven seed generation for Java targets.
+# Downloads build outputs, sets up project structure, launches QuickSeed.
+set -eu
+
+HARNESS="${OSS_CRS_TARGET_HARNESS}"
+SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+PROJECT="${OSS_CRS_TARGET:-unknown}"
+echo "=== QuickSeed starting: harness=$HARNESS project=$PROJECT ==="
+
+# --- /shared symlink (QuickSeed hardcodes /shared/quickseed/, /shared/fuzzer_sync/) ---
+if [ "$SHARED" != "/shared" ]; then
+    rm -rf /shared 2>/dev/null || true
+    ln -sfn "$SHARED" /shared
+fi
+
+# --- Download build outputs ---
+CANONICAL_DIR="/tmp/build-canonical"
+mkdir -p "$CANONICAL_DIR"
+libCRS download-build-output build-canonical "$CANONICAL_DIR"
+
+COVERAGE_DIR="/tmp/build-coverage"
+mkdir -p "$COVERAGE_DIR"
+libCRS download-build-output build-coverage "$COVERAGE_DIR"
+
+FUNC_INDEX_DIR="/tmp/func-index"
+mkdir -p "$FUNC_INDEX_DIR"
+libCRS download-build-output func-index "$FUNC_INDEX_DIR"
+
+RANKING_DIR="/tmp/code-swipe-ranking"
+mkdir -p "$RANKING_DIR"
+libCRS download-build-output code-swipe-ranking "$RANKING_DIR"
+
+SPLIT_DIR="/tmp/split-metadata"
+mkdir -p "$SPLIT_DIR"
+libCRS download-build-output split-metadata "$SPLIT_DIR"
+
+AUG_DIR="/tmp/augmented-metadata"
+mkdir -p "$AUG_DIR"
+libCRS download-build-output augmented-metadata "$AUG_DIR"
+
+CODEQL_DIR="/tmp/codeql-analysis"
+mkdir -p "$CODEQL_DIR"
+libCRS download-build-output codeql-analysis "$CODEQL_DIR" 2>/dev/null || true
+
+echo "Build outputs downloaded."
+
+# --- Set up debug/coverage build structures ---
+# QuickSeed expects OSSFuzzProject layout:
+#   $BUILD_DIR/projects/<project_name>/artifacts/out/...
+DEBUG_BUILDS_DIR="/tmp/debug-builds"
+COVERAGE_BUILDS_DIR="/tmp/coverage-builds"
+OSS_FUZZ_REPO="/tmp/oss-fuzz-repo"
+mkdir -p "$DEBUG_BUILDS_DIR" "$COVERAGE_BUILDS_DIR" "$OSS_FUZZ_REPO"
+
+# Create oss-fuzz repo structure (minimal, for project path resolution)
+OSS_FUZZ_PROJ="$OSS_FUZZ_REPO/projects/$PROJECT"
+mkdir -p "$OSS_FUZZ_PROJ"
+if [ -d "$CANONICAL_DIR/project_dir" ]; then
+    cp -r "$CANONICAL_DIR/project_dir/"* "$OSS_FUZZ_PROJ/" 2>/dev/null || true
+fi
+
+# Extract build configuration IDs from split metadata
+BUILD_IDS=$(python3 -c "
+import json
+with open('$SPLIT_DIR/target_split_metadata.json') as f:
+    meta = json.load(f)
+for k in meta.get('build_configurations', {}):
+    print(k)
+" 2>/dev/null || echo "")
+if [ -z "$BUILD_IDS" ]; then
+    BUILD_IDS="address_default"
+fi
+echo "Build configuration IDs: $BUILD_IDS"
+
+# Set up debug build (from canonical build)
+for BUILD_ID in $BUILD_IDS; do
+    BUILD_TARGET="$DEBUG_BUILDS_DIR/$BUILD_ID/projects/$PROJECT"
+    mkdir -p "$BUILD_TARGET/artifacts"
+    if [ -d "$CANONICAL_DIR/artifacts/out" ]; then
+        cp -r "$CANONICAL_DIR/artifacts/out" "$BUILD_TARGET/artifacts/out"
+    elif [ -d "$CANONICAL_DIR/out" ]; then
+        cp -r "$CANONICAL_DIR/out" "$BUILD_TARGET/artifacts/out"
+    fi
+    mkdir -p "$BUILD_TARGET/artifacts/work"
+    if [ -d "$BUILD_TARGET/artifacts/out/.shellphish_src" ]; then
+        ln -sf out/.shellphish_src "$BUILD_TARGET/artifacts/built_src"
+    fi
+    for f in Dockerfile build.sh project.yaml; do
+        [ -f "$CANONICAL_DIR/$f" ] && cp "$CANONICAL_DIR/$f" "$BUILD_TARGET/"
+    done
+    [ -f "$BUILD_TARGET/Dockerfile" ] || echo "FROM scratch" > "$BUILD_TARGET/Dockerfile"
+    echo "Debug build [$BUILD_ID] at $BUILD_TARGET"
+
+    # Set up coverage build (same layout)
+    COV_TARGET="$COVERAGE_BUILDS_DIR/$BUILD_ID/projects/$PROJECT"
+    mkdir -p "$COV_TARGET/artifacts"
+    if [ -d "$COVERAGE_DIR/artifacts/out" ]; then
+        cp -r "$COVERAGE_DIR/artifacts/out" "$COV_TARGET/artifacts/out"
+    elif [ -d "$COVERAGE_DIR/out" ]; then
+        cp -r "$COVERAGE_DIR/out" "$COV_TARGET/artifacts/out"
+    fi
+    mkdir -p "$COV_TARGET/artifacts/work"
+    if [ -d "$COV_TARGET/artifacts/out/.shellphish_src" ]; then
+        ln -sf out/.shellphish_src "$COV_TARGET/artifacts/built_src"
+    fi
+    for f in Dockerfile build.sh project.yaml; do
+        [ -f "$COVERAGE_DIR/$f" ] && cp "$COVERAGE_DIR/$f" "$COV_TARGET/"
+    done
+    [ -f "$COV_TARGET/Dockerfile" ] || echo "FROM scratch" > "$COV_TARGET/Dockerfile"
+done
+
+# --- Source code ---
+SOURCE_DIR="$CANONICAL_DIR/artifacts/out/.shellphish_src"
+if [ ! -d "$SOURCE_DIR" ]; then
+    SOURCE_DIR="/src"
+fi
+
+# --- Find analysis reports ---
+RANKING_FILE=""
+for f in "$RANKING_DIR"/*.yaml "$RANKING_DIR"/*.yml "$RANKING_DIR"/ranking*; do
+    [ -f "$f" ] && { RANKING_FILE="$f"; break; }
+done
+[ -z "$RANKING_FILE" ] && RANKING_FILE=$(find "$RANKING_DIR" -name "*.yaml" -o -name "*.yml" | head -1)
+echo "Ranking file: $RANKING_FILE"
+
+# CodeQL report: QuickSeed expects Jazzer sink analysis (jazzer_sink_methods.yaml)
+# or CWE report (codeql-cwe-report.json). If neither exists, create a minimal
+# empty report so QuickSeed's open() doesn't fail on empty string.
+CODEQL_REPORT=""
+for f in "$CODEQL_DIR"/jazzer_sink_methods.yaml "$CODEQL_DIR"/*sink*.yaml \
+         "$CODEQL_DIR"/codeql-cwe-report.json "$CODEQL_DIR"/codeql-cwe-report.yaml \
+         "$CODEQL_DIR"/*.yaml; do
+    [ -f "$f" ] && { CODEQL_REPORT="$f"; break; }
+done
+if [ -z "$CODEQL_REPORT" ]; then
+    CODEQL_REPORT="/tmp/empty-codeql-report.yaml"
+    echo "results: []" > "$CODEQL_REPORT"
+    echo "WARNING: No CodeQL report found, using empty report"
+fi
+echo "CodeQL report: $CODEQL_REPORT"
+
+# --- Prepare aggregated harness info ---
+# QuickSeed expects an aggregated harness YAML. Build it from split metadata.
+HARNESS_INFO_FILE="/tmp/aggregated_harness_info.yaml"
+python3 <<PYEOF
+import yaml, json, os
+
+project = "$PROJECT"
+harness = "$HARNESS"
+split_file = "$SPLIT_DIR/target_split_metadata.json"
+
+with open(split_file) as f:
+    split_meta = json.load(f)
+
+build_configs = split_meta.get("build_configurations", {})
+harness_infos = {}
+
+for bc_id, bc in build_configs.items():
+    for hi_id, hi in bc.get("harness_infos", {}).items():
+        h_name = hi.get("cp_harness_name", harness)
+        harness_infos[hi_id] = {
+            "project_id": split_meta.get("project_id", project),
+            "project_name": project,
+            "cp_harness_name": h_name,
+            "cp_harness_binary_path": f"/out/{h_name}",
+            "build_configuration_id": bc_id,
+            "architecture": hi.get("architecture", "x86_64"),
+            "sanitizer": hi.get("sanitizer", "address"),
+        }
+
+# If no harness infos found, create a default one
+if not harness_infos:
+    harness_infos["0"] = {
+        "project_id": project,
+        "project_name": project,
+        "cp_harness_name": harness,
+        "cp_harness_binary_path": f"/out/{harness}",
+        "build_configuration_id": "address_default",
+        "architecture": "x86_64",
+        "sanitizer": "address",
+    }
+
+output = {"harness_infos": harness_infos}
+with open("$HARNESS_INFO_FILE", "w") as f:
+    yaml.safe_dump(output, f)
+print(f"Aggregated harness info: {len(harness_infos)} harnesses")
+PYEOF
+
+# --- Environment ---
+export OSSCRS_INTEGRATION_MODE=1
+export LOCAL_RUN=True
+export USE_LLM_API=1
+export AIXCC_LITELLM_HOSTNAME="${OSS_CRS_LLM_API_URL:-${AIXCC_LITELLM_HOSTNAME:-http://litellm.crs-shellphish:4000}}"
+export LITELLM_KEY="${OSS_CRS_LLM_API_KEY:-${LITELLM_KEY:-}}"
+export OPENAI_API_KEY="${LITELLM_KEY}"
+export OPENAI_API_BASE="${AIXCC_LITELLM_HOSTNAME}"
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+export ANALYSIS_GRAPH_BOLT_URL="${ANALYSIS_GRAPH_BOLT_URL:-bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-quickseed:7687}"
+export CODEQL_SERVER_URL="${CODEQL_SERVER_URL:-http://codeql-server.crs-shellphish-quickseed:4000}"
+
+# --- Output directories ---
+CRASH_DIR="/tmp/quickseed-crashes"
+REPORT_DIR="/tmp/quickseed-reports"
+LOG_DIR="/tmp/quickseed-logs"
+mkdir -p "$CRASH_DIR" "$REPORT_DIR" "$LOG_DIR"
+
+# --- Register PoV submission directory ---
+libCRS register-submit-dir pov "$CRASH_DIR" &
+
+# --- Wait for AG init (populates Neo4j with callgraph data) ---
+echo "Waiting for AG init..."
+AG_WAIT=0
+while [ $AG_WAIT -lt 300 ] && [ ! -f "$SHARED/ag_init_done" ]; do
+    sleep 5
+    AG_WAIT=$((AG_WAIT + 5))
+done
+[ -f "$SHARED/ag_init_done" ] && echo "AG init done." || echo "WARNING: AG init not completed in time, continuing."
+
+# --- Wait for Neo4j ---
+echo "Waiting for Neo4j..."
+NEO4J_WAIT=0
+while [ $NEO4J_WAIT -lt 60 ]; do
+    if timeout 10 python3 -c "from neomodel import db; db.set_connection('${ANALYSIS_GRAPH_BOLT_URL}'); db.cypher_query('RETURN 1')" 2>&1; then echo "Neo4j connected."; break; fi
+    echo "Neo4j not ready yet (attempt $((NEO4J_WAIT/5+1)))"
+    sleep 5
+    NEO4J_WAIT=$((NEO4J_WAIT + 5))
+done
+
+# --- Set up QuickSeed environment variables ---
+# These map to what run_quickseed.sh expects
+BUILD_ID=$(echo "$BUILD_IDS" | head -1)
+export CRS_TASK_ANALYSIS_SOURCE="$SOURCE_DIR"
+export OSS_FUZZ_REPO="$OSS_FUZZ_REPO"
+export AGGREGATED_HARNESS_INFO="$HARNESS_INFO_FILE"
+export PROJECT_NAME="$PROJECT"
+export PROJECT_METADATA="$AUG_DIR/augmented_metadata.json"
+export PROJECT_ID="$PROJECT"
+export FULL_FUNCTIONS_JSONS_DIR="$FUNC_INDEX_DIR"
+export FULL_FUNCTIONS_INDEX="$FUNC_INDEX_DIR/indices.json"
+export COVERAGE_BUILD_ARTIFACTS="$COVERAGE_BUILDS_DIR/$BUILD_ID/projects/$PROJECT"
+export DEBUG_BUILD_ARTIFACTS="$DEBUG_BUILDS_DIR/$BUILD_ID/projects/$PROJECT"
+export BUILD_CONFIGURATION_ID="$BUILD_ID"
+export CRASH_DIR_PASS_TO_POV="$CRASH_DIR"
+export CRASH_METADATA_DIR_PASS_TO_POV="$CRASH_DIR"
+export QUICKSEED_CODEQL_REPORT="${CODEQL_REPORT:-}"
+export QUICKSEED_CODESWIPE_REPORT="${RANKING_FILE:-}"
+export QUICKSEED_LOG="$LOG_DIR"
+export QUICKSEED_PATH_BACKUP_REPORT="$REPORT_DIR"
+export QUICKSEED_CRASHING_SEED_BACKUP="$CRASH_DIR"
+
+# If augmented_metadata is YAML not JSON, convert it
+if [ -f "$AUG_DIR/augmented_metadata.yaml" ] && [ ! -f "$AUG_DIR/augmented_metadata.json" ]; then
+    python3 -c "
+import yaml, json
+with open('$AUG_DIR/augmented_metadata.yaml') as f:
+    data = yaml.safe_load(f)
+with open('$AUG_DIR/augmented_metadata.json', 'w') as f:
+    json.dump(data, f)
+"
+    export PROJECT_METADATA="$AUG_DIR/augmented_metadata.json"
+fi
+
+echo "=== Launching QuickSeed ==="
+echo "Debug build: $DEBUG_BUILD_ARTIFACTS"
+echo "Coverage build: $COVERAGE_BUILD_ARTIFACTS"
+echo "Source: $SOURCE_DIR"
+echo "CodeQL report: $QUICKSEED_CODEQL_REPORT"
+echo "CodeSwipe report: $QUICKSEED_CODESWIPE_REPORT"
+echo "Func index: $FUNC_INDEX_DIR"
+
+# --- Launch QuickSeed via its original run script ---
+cd /quickseed
+bash scripts/run_quickseed.sh 2>&1 | tee "$LOG_DIR/quickseed_run.log" || true
+
+# Stay alive — oss-crs uses --abort-on-container-exit
+exec sleep infinity

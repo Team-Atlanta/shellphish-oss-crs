@@ -14,16 +14,27 @@ FUNC_INDEX_DIR="/tmp/func-index"
 mkdir -p "$FUNC_INDEX_DIR"
 libCRS download-build-output func-index "$FUNC_INDEX_DIR"
 
-CLANG_INDEX_DIR="/tmp/clang-index"
-mkdir -p "$CLANG_INDEX_DIR"
-libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+# Language-dependent: function JSON directory source
+case "$LANG" in
+    jvm|java)
+        # Java: function JSONs from func-index (antlr4-guy output, already downloaded above)
+        FUNC_JSON_DIR="$FUNC_INDEX_DIR"
+        ;;
+    *)
+        # C/C++: function JSONs from clang-indexer output
+        CLANG_INDEX_DIR="/tmp/clang-index"
+        mkdir -p "$CLANG_INDEX_DIR"
+        libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+        FUNC_JSON_DIR="$CLANG_INDEX_DIR/full"
+        ;;
+esac
 
 # --- Environment ---
 export CP_NAME="$PROJECT"
 export PROJ_ID="$PROJECT"
 export LANG="$LANG"
 export FUNCTION_INDEX_PATH="$FUNC_INDEX_DIR/indices.json"
-export FUNCTION_JSON_DIR="$CLANG_INDEX_DIR/full"
+export FUNCTION_JSON_DIR="$FUNC_JSON_DIR"
 # analysis_graph transitively imports agentlib which checks LITELLM_KEY + LITELLM_HOSTNAME.
 # AG init doesn't use LLM, but the import chain requires these to be set.
 export LITELLM_KEY="${LITELLM_KEY:-dummy-ag-init}"

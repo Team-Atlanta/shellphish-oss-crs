@@ -1,0 +1,12 @@
+#!/bin/bash
+# OSS-CRS glue: dispatches to the appropriate Jazzer build script based on BUILD_OUTPUT_NAME.
+# - build-canonical: runs compile_canonical_build_java (preserves source, generates metadata)
+# - anything else: runs compile_shellphish_jazzer (standard Jazzer build)
+case "${BUILD_OUTPUT_NAME:-build-jazzer}" in
+    build-canonical)
+        exec compile_canonical_build_java
+        ;;
+    *)
+        exec compile_shellphish_jazzer
+        ;;
+esac

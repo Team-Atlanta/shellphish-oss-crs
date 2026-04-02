@@ -35,5 +35,7 @@ COPY --from=libcrs . /libCRS
 RUN /libCRS/install.sh
 COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
 COPY bin/compile_shellphish_jazzer /usr/local/bin/compile_shellphish_jazzer
-RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_shellphish_jazzer
-CMD ["compile_shellphish_jazzer"]
+COPY bin/compile_canonical_build_java /usr/local/bin/compile_canonical_build_java
+COPY bin/compile_jazzer_dispatch /usr/local/bin/compile_jazzer_dispatch
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_shellphish_jazzer /usr/local/bin/compile_canonical_build_java /usr/local/bin/compile_jazzer_dispatch
+CMD ["compile_jazzer_dispatch"]

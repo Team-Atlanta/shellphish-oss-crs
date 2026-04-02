@@ -9,8 +9,20 @@ set -euo pipefail
 FUNC_INDEX_DIR="/tmp/func-index-input"
 libCRS download-build-output func-index "$FUNC_INDEX_DIR"
 
-CLANG_INDEX_DIR="/tmp/clang-index-input"
-libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+# Language-dependent: function JSON directory source
+LANG="${FUZZING_LANGUAGE:-c}"
+case "$LANG" in
+    jvm|java)
+        # Java: func-index from antlr4-guy already contains METHOD/ JSONs
+        FUNC_JSON_SOURCE_DIR="$FUNC_INDEX_DIR"
+        ;;
+    *)
+        # C/C++: function JSONs from clang-indexer output
+        CLANG_INDEX_DIR="/tmp/clang-index-input"
+        libCRS download-build-output clang-index "$CLANG_INDEX_DIR"
+        FUNC_JSON_SOURCE_DIR="$CLANG_INDEX_DIR/full"
+        ;;
+esac
 
 SEMGREP_DIR="/tmp/semgrep-input"
 libCRS download-build-output semgrep-report "$SEMGREP_DIR" 2>/dev/null || true
@@ -75,7 +87,7 @@ ARGS=(
     --project-id "${OSS_CRS_TARGET:-unknown}"
     --project-dir "$PROJECT_DIR"
     --index-dir "$FUNC_INDEX_DIR/indices.json"
-    --index-dir-json "$CLANG_INDEX_DIR/full"
+    --index-dir-json "$FUNC_JSON_SOURCE_DIR"
     --output-path "$OUTPUT_DIR/ranking.yaml"
 )
 

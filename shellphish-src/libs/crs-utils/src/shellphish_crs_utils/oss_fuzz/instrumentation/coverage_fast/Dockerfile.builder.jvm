@@ -1,11 +1,32 @@
-ARG BASE_IMAGE=
+# OSS-CRS: map target_base_image to BASE_IMAGE, default PREBUILD_IMAGE
+ARG target_base_image
+ARG BASE_IMAGE=${target_base_image}
+ARG PREBUILD_IMAGE=crs-jazzer-prebuild:latest
+
+FROM ${PREBUILD_IMAGE} AS prebuild
 FROM ${BASE_IMAGE} AS aflpp-afl-compile-base
 
 # Installing stuff similar to antrl4-guy
 RUN pip install antlr4-tools pydantic antlr4-python3-runtime argparse tqdm GitPython jsonschema pyyaml numpy requests rich
-RUN git config --global --add safe.directory '*'
+# [OSS-CRS glue] || true: test targets are git submodules whose .git files
+# point outside the container, causing git config to fail (pitfall #3)
+RUN git config --global --add safe.directory '*' || true
+
+# Copy jazzer from prebuild (needed for coverage builds with Jazzer)
+RUN mkdir -p $SRC/shellphish/jazzer-aixcc/jazzer-build/
+COPY --from=prebuild $SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver $SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_driver
+COPY --from=prebuild $SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar $SRC/shellphish/jazzer-aixcc/jazzer-build/jazzer_agent_deploy.jar
 
 # Replacing the compile script
 RUN cp /usr/local/bin/compile /usr/local/bin/compile.old
-COPY compile-java /usr/local/bin/compile
+# [OSS-CRS glue] Build context is shellphish-oss-crs/, not coverage_fast/
+COPY shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/compile-java /usr/local/bin/compile
 RUN chmod +x /usr/local/bin/compile
+
+# --- OSS-CRS glue ---
+COPY --from=libcrs . /libCRS
+RUN /libCRS/install.sh
+COPY bin/shellphish_build_helpers.sh /usr/local/bin/shellphish_build_helpers.sh
+COPY bin/compile_java_coverage_build /usr/local/bin/compile_java_coverage_build
+RUN chmod +x /usr/local/bin/shellphish_build_helpers.sh /usr/local/bin/compile_java_coverage_build
+CMD ["compile_java_coverage_build"]

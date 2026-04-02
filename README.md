@@ -20,31 +20,33 @@ Each pipeline is a self-contained CRS configuration. Deploy by copying its yaml 
 | Pipeline | CRS Name | Config | Doc | Description |
 |----------|----------|--------|-----|-------------|
 | **JVM Fuzzers** | `crs-shellphish-jvm-fuzzers` | `crs-jvm-fuzzers.yaml` | [doc](docs/crs-shellphish-jvm-fuzzers.md) | Jazzer (libFuzzer for JVM) + LOSAN sanitizers |
+| **QuickSeed** | `crs-shellphish-quickseed` | `crs-quickseed.yaml` | [doc](docs/crs-shellphish-quickseed.md) | LLM-driven seed generation + Jazzer fuzzing |
 
-### Planned
-
-| Pipeline | Language | Description |
-|----------|----------|-------------|
-| antlr4-guy | JVM | Java AST analysis (function indexing, replaces clang-indexer for Java) |
-
-Note: DiscoveryGuy, AIJON, Grammar pipelines are language-agnostic and support JVM targets with the existing C pipeline configs. No separate Java-specific pipeline is needed — only `antlr4-guy` for Java function indexing (used by code-swipe).
+Note: DiscoveryGuy, AIJON, Grammar pipelines are C/C++ only. backdoorguy (entropy-based suspicious function detection, feeds DiscoveryGuy) is not yet integrated.
 
 ## Quick Start
 
 ```bash
 # 1. Choose a pipeline
-cp oss-crs/crs-c-fuzzers.yaml oss-crs/crs.yaml    # C
-cp oss-crs/crs-jvm-fuzzers.yaml oss-crs/crs.yaml   # Java
+cp oss-crs/crs-c-fuzzers.yaml oss-crs/crs.yaml      # C fuzzers
+cp oss-crs/crs-jvm-fuzzers.yaml oss-crs/crs.yaml    # Java fuzzers
+cp oss-crs/crs-quickseed.yaml oss-crs/crs.yaml      # Java + QuickSeed (LLM)
 
 # 2. Prepare (build prebuild images, first time only)
 cd /project/oss-crs
 uv run oss-crs prepare --compose-file example/crs-shellphish-c-fuzzers/compose.yaml
 
-# 3. Run
+# 3. For LLM pipelines (QuickSeed, DiscoveryGuy, Grammar), set API credentials:
+export AIXCC_LITELLM_HOSTNAME=<litellm-url>
+export LITELLM_KEY=<api-key>
+
+# 4. Run
 uv run oss-crs run --compose-file example/crs-shellphish-c-fuzzers/compose.yaml \
   --fuzz-proj-path <target> --target-source-path <source> \
   --target-harness <harness> --timeout 1800
 ```
+
+> **Note**: Large Java targets (e.g., activemq) may need `--timeout 3600` for the build phase to complete.
 
 ### Test Targets
 

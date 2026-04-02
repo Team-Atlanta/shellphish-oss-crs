@@ -76,12 +76,11 @@ run_jazzer.sh
 
 ## CPU Allocation
 
-`CRS_PIPELINE_MODE=fuzzers` — Jazzer uses `LIBFUZZER_CPUS` allocation with `fork=N`.
+`CRS_PIPELINE_MODE=jvm-fuzzers` — all available cores go to Jazzer (LibFuzzer) with `fork=N`. No AFL++ in Java pipeline.
 
 | Component | Cores (6 available) |
 |-----------|-------------------|
-| Jazzer | 5,6,7 (fork=3) |
-| (AFL++ cores unused) | 2,3,4 |
+| Jazzer | 2,3,4,5,6,7 (fork=6) |
 
 ## Prebuild
 
@@ -131,6 +130,7 @@ uv run oss-crs run --compose-file example/crs-shellphish-jvm-fuzzers/compose.yam
 | sanity-mock-java | 2+1 | ✅ fork=3 | 3 (9-10 bytes) | 3 | ~18k |
 | atlanta-imaging | 2+1 | ✅ fork=3 | 1 | 1 | ~13k |
 | atlanta-activemq | 2+1 | ✅ fork=3 | 238 | 195 | ~5k |
+| sanity-mock-java (post-QuickSeed) | 2+1 | ✅ fork=6 | — | — | — (jvm-fuzzers mode, 300s timeout) |
 
 ## Sanitizer Settings
 
@@ -139,5 +139,5 @@ LeakSanitizer disabled (`detect_leaks=0`), same as C pipelines.
 ## Known Limitations
 
 - `cov: 0 ft: 0` in fork mode stats — Java coverage is tracked by Jazzer agent internally, not reflected in libFuzzer's native coverage counters
-- Only `LIBFUZZER_CPUS` used; `AFLPP_CPUS` allocated but unused (no AFL++ in Java pipeline)
+- `jvm-fuzzers` mode gives all cores to Jazzer; `AFLPP_CPUS` is empty
 - Seed sharing requires `jazzer-minimized/queue/` to be populated by wrapper.py's merge process
