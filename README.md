@@ -10,7 +10,8 @@ Each pipeline is a self-contained CRS configuration. Deploy by copying its yaml 
 
 | Pipeline | CRS Name | Config | Doc | Description |
 |----------|----------|--------|-----|-------------|
-| **C Fuzzers** | `crs-shellphish-c-fuzzers` | `crs-c-fuzzers.yaml` | [doc](docs/crs-shellphish-c-fuzzers.md) | AFL++ + LibFuzzer parallel ensemble |
+| **AFL++** | `crs-shellphish-c-fuzzers-aflpp` | `crs-c-fuzzers-aflpp.yaml` | [doc](docs/crs-shellphish-c-fuzzers-aflpp.md) | AFL++ multi-instance fuzzing (all cores) |
+| **LibFuzzer** | `crs-shellphish-c-fuzzers-libfuzzer` | `crs-c-fuzzers-libfuzzer.yaml` | [doc](docs/crs-shellphish-c-fuzzers-libfuzzer.md) | LibFuzzer with wrapper.py fork mode (all cores) |
 | **DiscoveryGuy** | `crs-shellphish-discoveryguy` | `crs-discoveryguy.yaml` | [doc](docs/crs-shellphish-discoveryguy.md) | LLM-driven vulnerability discovery + AFL++ |
 | **AIJON** | `crs-shellphish-aijon` | `crs-aijon.yaml` | [doc](docs/crs-shellphish-aijon.md) | LLM-driven IJON instrumentation + AFL++ |
 | **Grammar** | `crs-shellphish-grammar` | `crs-grammar.yaml` | [doc](docs/crs-shellphish-grammar.md) | LLM grammar fuzzing + coverage-guided refinement |
@@ -28,20 +29,21 @@ Note: DiscoveryGuy, AIJON, Grammar pipelines are C/C++ only. backdoorguy (entrop
 
 ```bash
 # 1. Choose a pipeline
-cp oss-crs/crs-c-fuzzers.yaml oss-crs/crs.yaml      # C fuzzers
-cp oss-crs/crs-jvm-fuzzers.yaml oss-crs/crs.yaml    # Java fuzzers
-cp oss-crs/crs-quickseed.yaml oss-crs/crs.yaml      # Java + QuickSeed (LLM)
+cp oss-crs/crs-c-fuzzers-aflpp.yaml oss-crs/crs.yaml       # C AFL++
+cp oss-crs/crs-c-fuzzers-libfuzzer.yaml oss-crs/crs.yaml  # C LibFuzzer
+cp oss-crs/crs-jvm-fuzzers.yaml oss-crs/crs.yaml          # Java Jazzer
+cp oss-crs/crs-quickseed.yaml oss-crs/crs.yaml            # Java + QuickSeed (LLM)
 
 # 2. Prepare (build prebuild images, first time only)
 cd /project/oss-crs
-uv run oss-crs prepare --compose-file example/crs-shellphish-c-fuzzers/compose.yaml
+uv run oss-crs prepare --compose-file example/crs-shellphish-c-fuzzers-aflpp/compose.yaml
 
 # 3. For LLM pipelines (QuickSeed, DiscoveryGuy, Grammar), set API credentials:
 export AIXCC_LITELLM_HOSTNAME=<litellm-url>
 export LITELLM_KEY=<api-key>
 
 # 4. Run
-uv run oss-crs run --compose-file example/crs-shellphish-c-fuzzers/compose.yaml \
+uv run oss-crs run --compose-file example/crs-shellphish-c-fuzzers-aflpp/compose.yaml \
   --fuzz-proj-path <target> --target-source-path <source> \
   --target-harness <harness> --timeout 1800
 ```
