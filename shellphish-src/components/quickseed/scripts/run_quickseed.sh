@@ -28,9 +28,10 @@ export QUICKSEED_CRASHING_SEED_BACKUP="${QUICKSEED_CRASHING_SEED_BACKUP:-}"
 export SARIF_RETRY_METADATA="${SARIF_RETRY_METADATA:-}"
 
 
-mkdir -p /shared/quickseed/
+_SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
+mkdir -p "${_SHARED}/quickseed/"
 
-TEMP_DIR=$(mktemp -d -p /shared/quickseed/)
+TEMP_DIR=$(mktemp -d -p "${_SHARED}/quickseed/")
 rsync -ra "${CRS_TASK_ANALYSIS_SOURCE}/" ${TEMP_DIR}/source-root/
 rsync -ra "${OSS_FUZZ_REPO}/" ${TEMP_DIR}/oss-fuzz/
 rsync -ra "${OSS_FUZZ_REPO}/" ${TEMP_DIR}/coverage-build/
@@ -50,7 +51,7 @@ export SOURCE_ROOT="${TEMP_DIR}/source-root"
 # export FUZZ_DUMP_DIR="/shared/fuzzer_sync/${JAZZER_INSTANCE_UNIQUE_NAME}/sync-quickseed/"
 # export CRASH_DIR="${FUZZ_DUMP_DIR}/crashes/"
 # export BENIGN_DIR="${FUZZ_DUMP_DIR}/queue/"
-export COST_DIR="/shared/quickseed-agentlib-cost"
+export COST_DIR="${_SHARED}/quickseed-agentlib-cost"
 
 # mkdir -p "$FUZZ_DUMP_DIR"
 # mkdir -p "$CRASH_DIR"

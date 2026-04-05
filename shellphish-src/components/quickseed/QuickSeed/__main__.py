@@ -275,7 +275,8 @@ def prepare_harnesses(debug_build: OSSFuzzProject, harness_infos_path: Path, tar
             harness_path = find_absolute_path2(target_root, harness_path)
         _l.debug(f"Harness path is {harness_path}")
         harness_dump_name = f"{harness_data.project_name}-{harness_data.cp_harness_name}-{harness_data.harness_info_id}"
-        harness_dump_dir = Path(f"/shared/fuzzer_sync/{harness_dump_name}/sync-quickseed/") #${PROJECT_NAME}-${HARNESS_NAME}-${HARNESS_INFO_ID}/
+        _shared_dir = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        harness_dump_dir = Path(f"{_shared_dir}/fuzzer_sync/{harness_dump_name}/sync-quickseed/")
         harness_benign_dir = harness_dump_dir / "queue"
         harness_crash_dir = harness_dump_dir / "crashes"
         harness_benign_dir.mkdir(parents=True, exist_ok=True)

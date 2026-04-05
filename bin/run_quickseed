@@ -9,12 +9,6 @@ SHARED="${OSS_CRS_SHARED_DIR:-/shared}"
 PROJECT="${OSS_CRS_TARGET:-unknown}"
 echo "=== QuickSeed starting: harness=$HARNESS project=$PROJECT ==="
 
-# --- /shared symlink (QuickSeed hardcodes /shared/quickseed/, /shared/fuzzer_sync/) ---
-if [ "$SHARED" != "/shared" ]; then
-    rm -rf /shared 2>/dev/null || true
-    ln -sfn "$SHARED" /shared
-fi
-
 # --- Download build outputs ---
 CANONICAL_DIR="/tmp/build-canonical"
 mkdir -p "$CANONICAL_DIR"

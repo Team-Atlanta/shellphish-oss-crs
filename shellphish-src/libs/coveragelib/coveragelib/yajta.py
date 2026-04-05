@@ -134,8 +134,10 @@ class Yajta:
         self.crash_mode = crash_mode
         target_dir = Path(target_dir).resolve()
 
-        # The target dir MUST be in /shared/
-        assert str(target_dir).startswith("/shared/")
+        # The target dir MUST be in the shared directory
+        _shared_prefix = os.environ.get("OSS_CRS_SHARED_DIR", "/shared")
+        assert str(target_dir).startswith(_shared_prefix), \
+            f"target_dir {target_dir} must be under shared dir {_shared_prefix}"
 
         # To make sure the user is giving us an oss-fuzz-dir
         # we are gonna assert that the folder "artifacts"
@@ -159,7 +161,7 @@ class Yajta:
         os.makedirs(self.covlib_done_files_at, exist_ok=True)
         os.makedirs(self.covlib_queue_folder_at, exist_ok=True)
 
-        assert str(self.coverage_harnesses_corpuses_at).startswith("/shared/")
+        assert str(self.coverage_harnesses_corpuses_at).startswith(_shared_prefix)
 
         # This is the directory of the oss-fuzz-cp
         self.target_dir = target_dir
