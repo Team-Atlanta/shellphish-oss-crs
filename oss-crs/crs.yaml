@@ -1,0 +1,37 @@
+name: crs-shellphish-jvm-fuzzers
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  - name: jazzer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/Dockerfile.builder
+    outputs:
+      - build-jazzer
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      FUZZING_LANGUAGE: jvm
+      BUILD_OUTPUT_NAME: build-jazzer
+
+crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
+    additional_env:
+      CRS_PIPELINE_MODE: jvm-fuzzers
+  jazzer_fuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/jazzer/Dockerfile.runner
+
+supported_target:
+  mode:
+    - full
+    - delta
+  language:
+    - jvm
+  sanitizer:
+    - address
+  architecture:
+    - x86_64
