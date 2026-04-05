@@ -1,0 +1,154 @@
+name: crs-shellphish-grammar
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  # Canonical build
+  - name: canonical-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-canonical
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      BUILD_OUTPUT_NAME: build-canonical
+
+  # AFL++ build (for fuzzing + coverage data)
+  - name: aflpp-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
+    outputs:
+      - build-aflpp
+    additional_env:
+      FUZZING_ENGINE: shellphish_aflpp
+      BUILD_OUTPUT_NAME: build-aflpp
+
+  # Coverage build (for Grammar-Guy/Roomba tracer)
+  - name: coverage-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.builder.c
+    outputs:
+      - build-coverage
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      SANITIZER: coverage
+      BUILD_OUTPUT_NAME: build-coverage
+
+  # CodeQL build (database creation, no dependencies on analysis chain)
+  - name: codeql-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.builder
+    outputs:
+      - codeql-db
+    additional_env:
+      BUILD_OUTPUT_NAME: codeql-db
+
+  # Analysis chain
+  - name: clang-indexer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.builder
+    outputs:
+      - clang-index
+    additional_env:
+      BUILD_OUTPUT_NAME: clang-index
+
+  # Metadata chain
+  - name: target-identifier
+    dockerfile: shellphish-src/components/target-identifier/Dockerfile
+    outputs:
+      - augmented-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: augmented-metadata
+  - name: config-splitter
+    dockerfile: shellphish-src/components/configuration-splitter/Dockerfile
+    outputs:
+      - split-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: split-metadata
+
+  # Post-processing
+  - name: func-index-gen
+    dockerfile: shellphish-src/components/function-index-generator/Dockerfile
+    outputs:
+      - func-index
+    additional_env:
+      BUILD_OUTPUT_NAME: func-index
+
+  # CodeQL analysis (needs codeql-db + func-index + clang-index; produces CWE report + DB zip)
+  - name: codeql-analysis
+    dockerfile: shellphish-src/components/codeql/Dockerfile
+    outputs:
+      - codeql-analysis
+    additional_env:
+      BUILD_OUTPUT_NAME: codeql-analysis
+
+crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
+    additional_env:
+      CRS_PIPELINE_MODE: grammar
+  neo4j:
+    dockerfile: neo4j/Dockerfile
+  codeql-server:
+    dockerfile: shellphish-src/services/codeql_server/Dockerfile
+    additional_env:
+      FUZZING_LANGUAGE: "c"
+  ag-init:
+    dockerfile: shellphish-src/components/codeql/Dockerfile.ag-init-run
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-grammar:7687"
+      CODEQL_SERVER_URL: "http://codeql-server.crs-shellphish-grammar:4000"
+      FUZZING_LANGUAGE: "c"
+
+  # AFL++ fuzzer: provides fuzzer_sync data that Grammar-Guy reads
+  aflpp_fuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
+
+  # Coverage tracer (Grammar-Guy buddy): processes Grammar-Guy's seeds → coverage report
+  coverage_tracer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.runner.c
+    additional_env:
+      TRACER_INSTANCE_ID: grammar
+
+  # Coverage tracer (GrammarRoomba buddy): processes Roomba's seeds → coverage report
+  coverage_tracer_roomba:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.runner.c
+    additional_env:
+      TRACER_INSTANCE_ID: roomba
+
+  # Coverage tracer (coverage-guy buddy): processes AFL++ seeds → coverage for Neo4j
+  coverage_tracer_covguy:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.runner.c
+    additional_env:
+      TRACER_INSTANCE_ID: covguy
+      COVERAGE_AGGREGATE: "false"
+
+  # Coverage-guy: monitors AFL++ seeds → traces coverage → writes HarnessInputNode to Neo4j
+  coverage_guy:
+    dockerfile: shellphish-src/components/coverage-guy/Dockerfile
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-grammar:7687"
+
+  # Grammar-Guy: LLM-driven grammar generation
+  grammar_guy:
+    dockerfile: shellphish-src/components/grammar-guy/Dockerfile
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-grammar:7687"
+
+  # GrammarRoomba: grammar refinement
+  grammaroomba:
+    dockerfile: shellphish-src/components/grammaroomba/Dockerfile
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-grammar:7687"
+
+supported_target:
+  mode:
+    - full
+    - delta
+  language:
+    - c
+    - c++
+  sanitizer:
+    - address
+  architecture:
+    - x86_64
