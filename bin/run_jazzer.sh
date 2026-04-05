@@ -138,30 +138,31 @@ done
 # --- Launch N independent Jazzer instances (single-process, no fork) ---
 echo "=== Jazzer: $NUM_CORES independent instances (cores: $LIBFUZZER_CPUS) ==="
 set +e
-PIDS=""
 
+# Launch secondary instances in background (instance 1..N-1)
 for i in "${!CORES[@]}"; do
+    [ "$i" -eq 0 ] && continue  # skip instance 0, will run as foreground
     CORE=${CORES[$i]}
     INSTANCE_CORPUS="$SYNC_DIR/instance_${i}/queue"
-
-    echo "Starting Jazzer instance $i on core $CORE (corpus: $INSTANCE_CORPUS)"
-
-    # Each instance gets:
-    #   - Its own corpus dir as first positional arg (libFuzzer writes new findings here)
-    #   - jazzer-minimized/queue/ as shared read corpus (merged from all instances)
-    #   - All sync dirs from other components (QuickSeed, CorpusGuy, etc.)
+    echo "Starting Jazzer instance $i on core $CORE (background)"
     taskset -c "$CORE" "$OUT/$HARNESS" \
         "$INSTANCE_CORPUS" \
         "$SYNC_DIR/jazzer-minimized/queue" \
         "$SYNC_DIR/sync-quickseed/queue" \
         "$SYNC_DIR/sync-corpusguy/queue" \
         "$SYNC_DIR/sync-oss-crs-external/queue" &
-    PIDS="$PIDS $!"
 done
 
-# Wait for any instance to exit (shouldn't happen normally)
-wait -n $PIDS 2>/dev/null || true
-
-echo "WARNING: A Jazzer instance exited. Keeping alive for abort-on-container-exit."
-# Stay alive — oss-crs uses --abort-on-container-exit
-exec sleep infinity
+# Launch instance 0 as foreground process (exec replaces bash).
+# When oss-crs timeout kills the container, docker stop sends SIGTERM to PID 1.
+# Since PID 1 IS the Jazzer process (via exec), it terminates immediately.
+# Container exit → --abort-on-container-exit stops everything.
+CORE=${CORES[0]}
+INSTANCE_CORPUS="$SYNC_DIR/instance_0/queue"
+echo "Starting Jazzer instance 0 on core $CORE (foreground, exec)"
+exec taskset -c "$CORE" "$OUT/$HARNESS" \
+    "$INSTANCE_CORPUS" \
+    "$SYNC_DIR/jazzer-minimized/queue" \
+    "$SYNC_DIR/sync-quickseed/queue" \
+    "$SYNC_DIR/sync-corpusguy/queue" \
+    "$SYNC_DIR/sync-oss-crs-external/queue"
