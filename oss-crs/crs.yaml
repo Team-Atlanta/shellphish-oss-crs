@@ -1,0 +1,153 @@
+name: crs-shellphish-aijon
+type:
+  - bug-finding
+version: 1.0.0
+docker_registry: local
+
+prepare_phase:
+  hcl: oss-crs/docker-bake.hcl
+
+target_build_phase:
+  # Canonical build (source + harnesses)
+  - name: canonical-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/shellphish_libfuzzer/Dockerfile.builder
+    outputs:
+      - build-canonical
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      BUILD_OUTPUT_NAME: build-canonical
+
+  # CodeQL build (creates database)
+  - name: codeql-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/codeql/Dockerfile.builder
+    outputs:
+      - codeql-db
+    additional_env:
+      BUILD_OUTPUT_NAME: codeql-db
+
+  # AFL++ build (for fuzzing + coverage data generation)
+  - name: aflpp-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.builder
+    outputs:
+      - build-aflpp
+    additional_env:
+      FUZZING_ENGINE: shellphish_aflpp
+      BUILD_OUTPUT_NAME: build-aflpp
+
+  # Coverage build (for coverage tracer → AG data)
+  - name: coverage-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.builder.c
+    outputs:
+      - build-coverage
+    additional_env:
+      FUZZING_ENGINE: libfuzzer
+      SANITIZER: coverage
+      BUILD_OUTPUT_NAME: build-coverage
+
+  # Analysis chain
+  - name: clang-indexer-build
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/clang_indexer/Dockerfile.builder
+    outputs:
+      - clang-index
+    additional_env:
+      BUILD_OUTPUT_NAME: clang-index
+
+  # Metadata chain
+  - name: target-identifier
+    dockerfile: shellphish-src/components/target-identifier/Dockerfile
+    outputs:
+      - augmented-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: augmented-metadata
+  - name: config-splitter
+    dockerfile: shellphish-src/components/configuration-splitter/Dockerfile
+    outputs:
+      - split-metadata
+    additional_env:
+      BUILD_OUTPUT_NAME: split-metadata
+
+  # Post-processing chain
+  - name: func-index-gen
+    dockerfile: shellphish-src/components/function-index-generator/Dockerfile
+    outputs:
+      - func-index
+    additional_env:
+      BUILD_OUTPUT_NAME: func-index
+  - name: semgrep-analysis
+    dockerfile: shellphish-src/components/semgrep/Dockerfile
+    outputs:
+      - semgrep-report
+    additional_env:
+      BUILD_OUTPUT_NAME: semgrep-report
+
+  # CodeQL analysis (CWE report for code-swipe + DB zip for run-phase server)
+  - name: codeql-analysis
+    dockerfile: shellphish-src/components/codeql/Dockerfile
+    outputs:
+      - codeql-analysis
+    additional_env:
+      BUILD_OUTPUT_NAME: codeql-analysis
+
+  - name: code-swipe
+    dockerfile: shellphish-src/components/code-swipe/Dockerfile
+    outputs:
+      - code-swipe-ranking
+    additional_env:
+      BUILD_OUTPUT_NAME: code-swipe-ranking
+
+crs_run_phase:
+  entrypoint:
+    dockerfile: oss-crs-entrypoint/Dockerfile
+    additional_env:
+      CRS_PIPELINE_MODE: aijon
+  neo4j:
+    dockerfile: neo4j/Dockerfile
+  codeql-server:
+    dockerfile: shellphish-src/services/codeql_server/Dockerfile
+    additional_env:
+      FUZZING_LANGUAGE: "c"
+  ag-init:
+    dockerfile: shellphish-src/components/codeql/Dockerfile.ag-init-run
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-aijon:7687"
+      CODEQL_SERVER_URL: "http://codeql-server.crs-shellphish-aijon:4000"
+      FUZZING_LANGUAGE: "c"
+
+  # AFL++ fuzzer: generates coverage data for coverage tracer → AG
+  aflpp_fuzzer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/aflpp/Dockerfile.runner
+
+  # Coverage tracer: processes coverage data → writes CFGFunction to Neo4j
+  coverage_tracer:
+    dockerfile: shellphish-src/libs/crs-utils/src/shellphish_crs_utils/oss_fuzz/instrumentation/coverage_fast/Dockerfile.runner.c
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-aijon:7687"
+      TRACER_INSTANCE_ID: aijon
+
+  # AIJON instrumentation: reads AG → generates IJON patch (LLM)
+  aijon_instrumentation:
+    dockerfile: shellphish-src/components/aijon/Dockerfile
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-aijon:7687"
+
+  # AIJON builder: applies patch → compiles → fixer loop (LLM)
+  aijon_builder:
+    dockerfile: oss-crs/Dockerfile.aijon-builder
+    additional_env:
+      ANALYSIS_GRAPH_BOLT_URL: "bolt://neo4j:helloworldpdt@neo4j.crs-shellphish-aijon:7687"
+
+  # AIJON fuzzer: runs AFL++/IJON with compiled binary
+  aijon_fuzzer:
+    dockerfile: oss-crs/Dockerfile.aijon-fuzzer
+
+supported_target:
+  mode:
+    - full
+    - delta
+  language:
+    - c
+    - c++
+  sanitizer:
+    - address
+  architecture:
+    - x86_64
