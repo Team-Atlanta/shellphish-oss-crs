@@ -53,6 +53,6 @@ target "crs-component-base" {
   dockerfile = "docker/Dockerfile.component-base"
   tags       = ["aixcc-component-base:latest"]
   contexts   = {
-    "aixcc-dependencies-base:latest" = "target:crs-dependencies-base"
+    "aixcc-dependencies-base" = "target:crs-dependencies-base"
   }
 }
