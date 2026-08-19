@@ -27,6 +27,9 @@ target "crs-jazzer-prebuild" {
   args       = {
     OSS_FUZZ_BASE_BUILDER_IMAGE = "ghcr.io/aixcc-finals/base-builder:v1.3.0"
   }
+  contexts   = {
+    nautilus-src = "shellphish-src/libs/nautilus"
+  }
   tags       = ["crs-jazzer-prebuild:latest"]
 }
 
