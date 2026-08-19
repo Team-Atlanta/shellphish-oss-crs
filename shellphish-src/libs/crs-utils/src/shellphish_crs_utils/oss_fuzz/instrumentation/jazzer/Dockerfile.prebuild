@@ -62,7 +62,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 
 ####### Nautilus #######
-COPY nautilus $SRC/shellphish/nautilus
+COPY --from=nautilus-src . $SRC/shellphish/nautilus
 RUN rustup default nightly
 RUN cd $SRC/shellphish/nautilus && cargo clean && PYO3_PYTHON=python3.8 ./build.sh
 
